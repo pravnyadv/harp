@@ -86,6 +86,8 @@ mod tracing;
 mod tui;
 #[cfg(feature = "tui")]
 pub mod tui_export;
+#[cfg(all(feature = "tui", any(test, feature = "test-util")))]
+mod tui_test_support;
 mod ui_components;
 mod undo_close;
 mod uri;
@@ -648,7 +650,7 @@ impl LaunchMode {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(feature = "tui", feature = "test-util")))]
     pub(crate) fn new_for_unit_test() -> Self {
         LaunchMode::Test {
             driver: Box::new(None),
