@@ -25,7 +25,7 @@ use crate::terminal_background::probe_and_select_theme;
 use crate::terminal_session_view::{TuiConversationRestoreOrigin, TuiConversationRestoreTarget};
 
 #[derive(Parser)]
-#[command(name = "warp-tui")]
+#[command(name = "warp")]
 struct TuiArgs {
     /// Resume an Oz/Warp conversation by server token.
     #[arg(long)]
@@ -74,7 +74,8 @@ pub fn run() -> Result<()> {
     if result.is_ok() {
         if let Some(token) = exit_summary.token() {
             let token = token.as_str();
-            println!("To continue this conversation, run: warp-tui --resume {token}");
+            println!("To continue this conversation, run:");
+            println!("warp --resume {token}");
         }
     }
     result
