@@ -1,6 +1,7 @@
 //! Authenticated terminal-session TUI surface.
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,11 +30,12 @@ use warp::tui_export::{
     GitStatusMetadata, LLMId, LLMPreferences, LLMPreferencesEvent, ModelEvent,
     ParsedSlashCommandInput, PtyIntent, PtyIntentEvent, RepoDetectionSessionType,
     RepoDetectionSource, ServerConversationToken, ShellCommandExecutorEvent, SizeInfo, SizeUpdate,
-    SkillReference, SlashCommandDataSource as _, SlashCommandSelectionBehavior, StaticCommand,
-    TerminalModel, TerminalSurface, TerminalSurfaceInit, TranscriptScope, TuiMcpAction,
-    TuiMcpManager, TuiSlashCommand, TuiSlashCommandDataSource, TuiSlashCommandDataSourceArgs,
-    TuiZeroStateDataSource, UserTakeOverReason, COMMAND_REGISTRY,
-    LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, WAKEUP_THROTTLE_PERIOD,
+    SkillReference, SlashCommandDataSource as _, SlashCommandSelectionBehavior,
+    StartAgentExecutorEvent, StartAgentRequest, StaticCommand, TerminalModel, TerminalSurface,
+    TerminalSurfaceInit, TranscriptScope, TuiMcpAction, TuiMcpManager, TuiSlashCommand,
+    TuiSlashCommandDataSource, TuiSlashCommandDataSourceArgs, TuiZeroStateDataSource,
+    UserTakeOverReason, COMMAND_REGISTRY, LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE,
+    WAKEUP_THROTTLE_PERIOD,
 };
 use warp_core::features::FeatureFlag;
 use warp_core::settings::Setting;
@@ -111,6 +113,13 @@ pub(crate) enum TuiTerminalSessionEvent {
     },
     WriteUserInput(Cow<'static, [u8]>),
     Resize(SizeUpdate),
+    StartAgentConversation {
+        request: Box<StartAgentRequest>,
+        working_directory: Option<PathBuf>,
+    },
+    CleanupFailedChildLaunch {
+        conversation_id: AIConversationId,
+    },
 }
 
 impl PtyIntentEvent for TuiTerminalSessionEvent {
@@ -124,6 +133,7 @@ impl PtyIntentEvent for TuiTerminalSessionEvent {
             }),
             Self::WriteUserInput(bytes) => Some(PtyIntent::WriteBytes(bytes.clone())),
             Self::Resize(size_update) => Some(PtyIntent::Resize(*size_update)),
+            Self::StartAgentConversation { .. } | Self::CleanupFailedChildLaunch { .. } => None,
         }
     }
 }
@@ -631,6 +641,20 @@ impl TuiTerminalSessionView {
                 ctx,
             )
         });
+        let start_agent_executor = action_model.as_ref(ctx).start_agent_executor(ctx);
+        ctx.subscribe_to_model(&start_agent_executor, |view, _, event, ctx| match event {
+            StartAgentExecutorEvent::CreateAgent(request) => {
+                ctx.emit(TuiTerminalSessionEvent::StartAgentConversation {
+                    request: request.clone(),
+                    working_directory: view.current_working_directory(ctx).map(PathBuf::from),
+                });
+            }
+            StartAgentExecutorEvent::CleanupFailedChildLaunch { conversation_id } => {
+                ctx.emit(TuiTerminalSessionEvent::CleanupFailedChildLaunch {
+                    conversation_id: *conversation_id,
+                });
+            }
+        });
         let ai_controller = ctx.add_model(|ctx| {
             BlocklistAIController::new(
                 ai_input_model.clone(),
@@ -1076,6 +1100,21 @@ impl TuiTerminalSessionView {
             exit_summary,
             active_blocker_view_id: None,
         }
+    }
+
+    /// Starts the first request for a child conversation hosted by this
+    /// background session.
+    pub(crate) fn start_orchestrated_child(
+        &mut self,
+        task_id: warp::tui_export::AmbientAgentTaskId,
+        prompt: String,
+        conversation_id: AIConversationId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.ai_controller.update(ctx, |controller, ctx| {
+            controller.set_ambient_agent_task_id(Some(task_id), ctx);
+            controller.send_agent_query_in_conversation(prompt, conversation_id, ctx);
+        });
     }
 
     /// The active front-of-queue blocking interaction, if any.
