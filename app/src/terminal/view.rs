@@ -2928,7 +2928,7 @@ pub struct BlockSelectionDetails {
 /// can fire many times mid-block from chatty prompts. Once-per-block work
 /// (git-repo detection on unchanged CWDs, `block_completed_callbacks` drain)
 /// must be gated on this distinction.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum BlockMetadataUpdateSource {
     /// `Event::BlockMetadataReceived` — the shell's precmd hook fired between
     /// blocks. Run all once-per-block work.
@@ -11410,6 +11410,22 @@ impl TerminalView {
             return;
         }
 
+        if source == BlockMetadataUpdateSource::Osc7 {
+            if let Some(cwd) = block_metadata.current_working_directory() {
+                let resolvable = block_metadata
+                    .session_id()
+                    .and_then(|sid| self.sessions.as_ref(ctx).get(sid))
+                    .map(|session| session.can_resolve_cwd_to_native_path(cwd))
+                    // Unknown session: don't block the update — this is a
+                    // targeted guard, not a general filter.
+                    .unwrap_or(true);
+                if !resolvable {
+                    log::debug!("Ignoring unresolvable OSC 7 cwd: {cwd:?}");
+                    return;
+                }
+            }
+        }
+
         if let Some(prev_block_metadata) = self.active_block_metadata.take() {
             // Only send event to save app state when the block is post bootstrap
             // and working directory has changed.
@@ -11503,7 +11519,7 @@ impl TerminalView {
                             // `maybe_set_pending_repo_init_path`'s project
                             // init before the actual command (e.g. `git
                             // clone`) finishes.
-                            if matches!(source, BlockMetadataUpdateSource::Precmd) {
+                            if source == BlockMetadataUpdateSource::Precmd {
                                 let callbacks =
                                     me.block_completed_callbacks.drain(..).collect_vec();
                                 for callback in callbacks {
