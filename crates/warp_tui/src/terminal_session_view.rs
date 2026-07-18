@@ -951,7 +951,7 @@ impl TuiTerminalSessionView {
             TuiTranscriptViewEvent::SelectionEnded(text) => match copy_to_clipboard(text) {
                 Ok(()) => view.show_copy_hint(ctx),
                 Err(error) => {
-                    log::warn!("Failed to copy TUI selection via OSC 52: {error}");
+                    log::warn!("Failed to copy TUI selection: {error}");
                     view.show_transient_hint(COPY_FAILED_HINT.to_owned(), ctx);
                 }
             },
@@ -2537,12 +2537,12 @@ impl TuiTerminalSessionView {
                     match copy_to_clipboard(&markdown) {
                         Ok(()) => {
                             self.show_success_hint(
-                                "Conversation sent to terminal clipboard".to_owned(),
+                                "Conversation copied to clipboard".to_owned(),
                                 ctx,
                             );
                         }
                         Err(error) => {
-                            log::warn!("Failed to export TUI conversation via OSC 52: {error}");
+                            log::warn!("Failed to export TUI conversation: {error}");
                             self.show_transient_hint(COPY_FAILED_HINT.to_owned(), ctx);
                         }
                     }
