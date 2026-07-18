@@ -59,8 +59,10 @@ use crate::autoupdate::{TuiAutoupdater, TuiAutoupdaterEvent};
 use crate::clipboard::copy_to_clipboard;
 use crate::conversation_menu::{TuiConversationMenuEvent, TuiConversationMenuModel};
 use crate::conversation_selection::TuiConversationSelection;
+use crate::editor_interaction::TuiEditorCommand;
 use crate::exit_confirmation::{ExitConfirmation, CTRL_C_EXIT_WINDOW};
 use crate::inline_menu::{active_inline_menu, TuiInlineMenu, MAX_INLINE_MENU_ROWS};
+use crate::input::view::TuiInputAction;
 use crate::input::{TuiInputView, TuiInputViewEvent};
 use crate::input_mode_policy::{self, TuiInputModePolicy};
 use crate::input_suggestions_mode::TuiInputSuggestionsModeModel;
@@ -246,6 +248,9 @@ pub(crate) enum TuiTerminalSessionAction {
     ToggleUsageDisplay,
     /// Raw user bytes to forward to the foreground PTY process.
     ForwardUserPtyBytes(Vec<u8>),
+    /// Ctrl-d while the prompt is focused: exit the TUI immediately when the
+    /// prompt is empty, else delete the next character.
+    Eof,
     /// Toggle the latest exposed inline plan.
     TogglePlan,
     /// Return keyboard focus from tabs to the session's default interaction target.
@@ -327,6 +332,12 @@ pub(crate) fn init(app: &mut AppContext) {
             TAKE_CONTROL_KEY_BINDING,
             TuiTerminalSessionAction::Interrupt,
             id!(TuiTerminalSessionView::ui_name()),
+        )
+        .with_group(TUI_BINDING_GROUP),
+        FixedBinding::new(
+            "ctrl-d",
+            TuiTerminalSessionAction::Eof,
+            id!(TuiInputView::ui_name()),
         )
         .with_group(TUI_BINDING_GROUP),
         FixedBinding::new(
@@ -1883,6 +1894,22 @@ impl TuiTerminalSessionView {
         ctx.notify();
     }
 
+    /// Handles ctrl-d while the prompt is focused. Unlike ctrl-c, ctrl-d exits
+    /// immediately when the prompt is empty; otherwise it keeps its editing
+    /// role of deleting the next character.
+    fn handle_eof(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.input_view.as_ref(ctx).is_empty(ctx) {
+            ctx.terminate_app(TerminationMode::ForceTerminate, None);
+        } else {
+            self.input_view.update(ctx, |input, ctx| {
+                input.handle_action(
+                    &TuiInputAction::EditorCommand(TuiEditorCommand::DeleteForward),
+                    ctx,
+                );
+            });
+        }
+    }
+
     /// Cancels the surface's running conversation (in-flight stream or pending
     /// tool actions), returning whether there was one to cancel.
     fn cancel_active_conversation(&mut self, ctx: &mut ViewContext<Self>) -> bool {
@@ -2477,6 +2504,10 @@ impl TuiTerminalSessionView {
                 self.mcp_menu.update(ctx, |menu, ctx| menu.open(ctx));
                 record_static_slash_command_accepted(command.name, true, ctx);
             }
+            TuiSlashCommand::Exit => {
+                record_static_slash_command_accepted(command.name, true, ctx);
+                ctx.terminate_app(TerminationMode::ForceTerminate, None);
+            }
             TuiSlashCommand::CreateNewProject => {
                 let Some(query) = argument
                     .map(|argument| argument.trim())
@@ -2874,6 +2905,7 @@ impl TypedActionView for TuiTerminalSessionView {
     fn handle_action(&mut self, action: &TuiTerminalSessionAction, ctx: &mut ViewContext<Self>) {
         match action {
             TuiTerminalSessionAction::Interrupt => self.handle_interrupt(ctx),
+            TuiTerminalSessionAction::Eof => self.handle_eof(ctx),
             TuiTerminalSessionAction::CancelRestore => {
                 self.cancel_conversation_restore(ctx);
             }
