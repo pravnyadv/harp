@@ -37,12 +37,12 @@ use crate::ai::agent::{
     DocumentContext, EditDocumentsResult, FileContext, FileGlobResult, FileGlobV2Match,
     FileGlobV2Result, FinishedAIAgentOutput, GrepFileMatch, GrepLineMatch, GrepResult,
     ImageContext, InsertReviewCommentsResult, OutputModelInfo, PassiveCodeDiffEntry,
-    PassiveSuggestionResultType, PassiveSuggestionTrigger, ReadDocumentsResult, ReadFilesResult,
-    ReadMCPResourceResult, ReadShellCommandOutputResult, RequestCommandOutputResult,
-    RequestFileEditsResult, SearchCodebaseFailureReason, SearchCodebaseResult, ServerOutputId,
-    Shared, ShellCommandCompletedTrigger, ShellCommandError, SuggestNewConversationResult,
-    SuggestPromptResult, TransferShellCommandControlToUserResult, UpdatedFileContext,
-    UploadArtifactResult, UserQueryMode, WriteToLongRunningShellCommandResult,
+    PassiveSuggestionResultType, PassiveSuggestionTrigger, ReadDocumentsResult,
+    ReadFilesFailedFile, ReadFilesResult, ReadMCPResourceResult, ReadShellCommandOutputResult,
+    RequestCommandOutputResult, RequestFileEditsResult, SearchCodebaseFailureReason,
+    SearchCodebaseResult, ServerOutputId, Shared, ShellCommandCompletedTrigger, ShellCommandError,
+    SuggestNewConversationResult, SuggestPromptResult, TransferShellCommandControlToUserResult,
+    UpdatedFileContext, UploadArtifactResult, UserQueryMode, WriteToLongRunningShellCommandResult,
 };
 use crate::ai::block_context::BlockContext;
 use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentVersion};
@@ -670,8 +670,19 @@ pub(crate) fn convert_tool_call_result_to_input(
                         .iter()
                         .map(|file| FileContext::from(file.clone()))
                         .collect();
+                    let failed_files = success
+                        .failed_reads
+                        .iter()
+                        .map(|failed_file| ReadFilesFailedFile {
+                            path: failed_file.path.clone(),
+                            message: failed_file.message.clone(),
+                        })
+                        .collect();
 
-                    ReadFilesResult::Success { files }
+                    ReadFilesResult::Success {
+                        files,
+                        failed_files,
+                    }
                 }
                 Some(api::read_files_result::Result::TextFilesSuccess(success)) => {
                     let files = success
@@ -679,7 +690,18 @@ pub(crate) fn convert_tool_call_result_to_input(
                         .iter()
                         .map(|file| FileContext::from(file.clone()))
                         .collect();
-                    ReadFilesResult::Success { files }
+                    let failed_files = success
+                        .failed_reads
+                        .iter()
+                        .map(|failed_file| ReadFilesFailedFile {
+                            path: failed_file.path.clone(),
+                            message: failed_file.message.clone(),
+                        })
+                        .collect();
+                    ReadFilesResult::Success {
+                        files,
+                        failed_files,
+                    }
                 }
                 Some(api::read_files_result::Result::Error(error)) => {
                     ReadFilesResult::Error(error.message.clone())
