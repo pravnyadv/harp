@@ -12,8 +12,8 @@ use ai::agent::action_result::{
 };
 use ai::agent::orchestration_config::OrchestrationConfig;
 use ai::skills::SkillReference;
-use futures::future::BoxFuture;
 use futures::FutureExt;
+use futures::future::BoxFuture;
 use warp_cli::agent::Harness;
 use warp_core::execution_mode::AppExecutionMode;
 use warpui::{Entity, EntityId, ModelContext, ModelHandle, SingletonEntity};
@@ -31,8 +31,8 @@ use crate::ai::document::plan_publication::{
 };
 use crate::ai::local_harness_setup::local_harness_product_disabled_message;
 use crate::ai::orchestration::{
-    can_execute_with_auth_secret, populate_default_auth_secret_for_execution,
-    OrchestrationConfigState,
+    OrchestrationConfigState, can_execute_with_auth_secret,
+    populate_default_auth_secret_for_execution,
 };
 
 /// Per-child spawn timeout. If a child agent doesn't report back within
@@ -371,7 +371,7 @@ impl RunAgentsExecutor {
         &mut self,
         input: ExecuteActionInput,
         ctx: &mut ModelContext<Self>,
-    ) -> impl Into<AnyActionExecution> {
+    ) -> impl Into<AnyActionExecution> + use<> {
         let AIAgentAction { action, id, .. } = input.action;
         let AIAgentActionType::RunAgents(request) = action else {
             return ActionExecution::InvalidAction;
@@ -635,12 +635,11 @@ fn validate_request(request: &RunAgentsRequest) -> Result<(), String> {
     if request.agent_run_configs.is_empty() {
         return Err("orchestrate: empty agent_run_configs".to_string());
     }
-    if matches!(request.execution_mode, RunAgentsExecutionMode::Local) {
-        if let Some(harness) = Harness::parse_local_child_harness(&request.harness_type) {
-            if let Some(message) = local_harness_product_disabled_message(harness) {
-                return Err(message.to_string());
-            }
-        }
+    if matches!(request.execution_mode, RunAgentsExecutionMode::Local)
+        && let Some(harness) = Harness::parse_local_child_harness(&request.harness_type)
+        && let Some(message) = local_harness_product_disabled_message(harness)
+    {
+        return Err(message.to_string());
     }
     if matches!(
         request.execution_mode,
@@ -701,10 +700,10 @@ pub fn run_agents_to_start_agent_mode(
                     model_id,
                 })
             } else {
-                if let Some(harness) = Harness::parse_local_child_harness(trimmed) {
-                    if let Some(message) = local_harness_product_disabled_message(harness) {
-                        return Err(message.to_string());
-                    }
+                if let Some(harness) = Harness::parse_local_child_harness(trimmed)
+                    && let Some(message) = local_harness_product_disabled_message(harness)
+                {
+                    return Err(message.to_string());
                 }
                 Ok(StartAgentExecutionMode::Local {
                     harness_type: Some(trimmed.to_string()),
