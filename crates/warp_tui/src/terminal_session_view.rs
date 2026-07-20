@@ -110,6 +110,7 @@ const ORCHESTRATION_TAB_LABEL_MAX_COLUMNS: u16 = 20;
 
 /// The footer hint shown while the ctrl-c exit confirmation is armed.
 const CTRL_C_EXIT_HINT: &str = "ctrl-c again to exit";
+const STARTING_SHELL_HINT: &str = "Starting shell...";
 const SESSION_CAN_CANCEL_RESTORE_FLAG: &str = "TuiSessionCanCancelRestore";
 const SESSION_CAN_HAND_BACK_CONTROL_FLAG: &str = "TuiSessionCanHandBackControl";
 
@@ -459,7 +460,17 @@ impl TuiTerminalSessionView {
 
     fn focus_current_owner(&mut self, ctx: &mut ViewContext<Self>) {
         match self.input_target() {
-            TuiInputTarget::Disabled | TuiInputTarget::Pty => {
+            TuiInputTarget::Disabled => {
+                if let Some(blocker) = self.active_blocking_child(ctx) {
+                    self.orchestration_tabs_focused = false;
+                    ctx.focus(&blocker);
+                } else if self.orchestration_tabs_focused {
+                    ctx.focus_self();
+                } else {
+                    ctx.focus(&self.input_view);
+                }
+            }
+            TuiInputTarget::Pty => {
                 self.orchestration_tabs_focused = false;
                 ctx.focus_self();
             }
@@ -933,6 +944,7 @@ impl TuiTerminalSessionView {
         let inline_menus_for_input = inline_menus.clone();
         let suggestions_mode_for_input = suggestions_mode.clone();
         let transcript_for_input = transcript.clone();
+        let terminal_model_for_input = model.clone();
         let orchestration_tab_bar = ctx.add_typed_action_tui_view(|_| TuiTabBarView::empty());
         let orchestration_tab_bar_for_input = orchestration_tab_bar.clone();
         let input_view = ctx.add_typed_action_tui_view(move |ctx| {
@@ -945,6 +957,10 @@ impl TuiTerminalSessionView {
                 move |ctx| orchestration_tab_bar_for_input.as_ref(ctx).has_tabs(),
                 ctx,
             )
+            .with_inline_menu_actions_allowed(move |_| {
+                let terminal_model = terminal_model_for_input.lock();
+                tui_input_target(&terminal_model).agent_editor_owns_input()
+            })
             .with_keyboard_enhancement_supported(keyboard_enhancement_supported)
         });
 
@@ -1084,7 +1100,7 @@ impl TuiTerminalSessionView {
                 view.update_process_input_focus(ctx);
                 ctx.notify();
             }
-            ModelEvent::BootstrapPrecmdDone => {
+            ModelEvent::VisibleBootstrapBlock | ModelEvent::BootstrapPrecmdDone => {
                 view.update_process_input_focus(ctx);
                 ctx.notify();
             }
@@ -2814,6 +2830,18 @@ impl TuiView for TuiTerminalSessionView {
         // input model is never written to, so its draft/cursor/selection/
         // scroll survive untouched.
         let blocker_active = self.active_blocking_child(ctx).is_some();
+        if !blocker_active && matches!(input_target, TuiInputTarget::Disabled) {
+            content = content.child(
+                TuiContainer::new(
+                    TuiText::new(STARTING_SHELL_HINT)
+                        .with_style(builder.muted_text_style())
+                        .truncate()
+                        .finish(),
+                )
+                .with_padding_top(1)
+                .finish(),
+            );
+        }
 
         // While the selected conversation is in progress (the GUI warping
         // indicator's core condition), the animated warping indicator sits
@@ -2871,8 +2899,11 @@ impl TuiView for TuiTerminalSessionView {
                 }
             }
         }
-        if !blocker_active && input_target.agent_editor_owns_input() {
-            if let Some(menu) = inline_menu {
+        if !blocker_active
+            && (input_target.agent_editor_owns_input()
+                || matches!(input_target, TuiInputTarget::Disabled))
+        {
+            if let (true, Some(menu)) = (input_target.agent_editor_owns_input(), inline_menu) {
                 content = content.child(
                     TuiConstrainedBox::new(menu)
                         .with_max_rows(MAX_INLINE_MENU_ROWS)
@@ -2894,7 +2925,10 @@ impl TuiView for TuiTerminalSessionView {
                 .with_max_rows(MAX_INPUT_TEXT_ROWS + 2)
                 .finish(),
             );
-            let footer = if self.orchestration_tabs_focused {
+            let footer = if matches!(input_target, TuiInputTarget::Disabled) {
+                self.render_footer(orchestration_tabs_available, ctx)
+                    .finish()
+            } else if self.orchestration_tabs_focused {
                 self.render_orchestration_tab_footer(&builder)
             } else {
                 self.render_footer(orchestration_tabs_available, ctx)
