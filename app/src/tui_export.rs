@@ -62,7 +62,7 @@ pub use crate::ai::blocklist::diff_storage::{
 };
 pub use crate::ai::blocklist::diff_types::{DiffSessionType, FileDiff, changed_lines_from_op};
 pub use crate::ai::blocklist::history_model::{
-    BlocklistAIHistoryEvent, BlocklistAIHistoryModel, CloudConversationData,
+    AIQueryHistory, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, CloudConversationData,
     ConversationStatusUpdate,
 };
 pub use crate::ai::blocklist::orchestration_event_streamer::{
@@ -193,6 +193,7 @@ pub use crate::terminal::view::{ExecuteCommandEvent, WAKEUP_THROTTLE_PERIOD};
 pub use crate::terminal::{
     BlockPadding, PtyIntent, PtyIntentEvent, ShellLaunchData, SizeInfo, SizeUpdate,
     TerminalManager as TerminalManagerTrait, TerminalModel, TerminalSurface,
+    prompt_history_for_terminal_view,
 };
 pub use crate::themes::default_themes::{dark_theme, light_theme};
 pub use crate::throttle::throttle;
@@ -202,7 +203,8 @@ pub use crate::tui::{
 };
 #[cfg(any(test, feature = "test-util"))]
 pub use crate::tui_test_support::{
-    queue_tui_permission_action, register_tui_session_view_test_singletons,
+    blocklist_ai_history_model_with_queries, queue_tui_permission_action,
+    register_tui_session_view_test_singletons,
 };
 pub use crate::util::image::{
     MAX_IMAGE_COUNT_FOR_QUERY, MAX_IMAGE_SIZE_BYTES, MIME_SNIFF_BYTES, ProcessImageResult,
