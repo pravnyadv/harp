@@ -18,10 +18,10 @@ use warp::tui_export::{
     AIActionStatus, AIAgentAction, AIAgentActionId, AIAgentActionType, AIAgentExchangeId,
     AIAgentOutputMessageType, AIAgentText, AIAgentTextSection, AIAgentTodo, AIBlockModel,
     AIBlockModelHelper, AIBlockOutputStatus, AIConversationId, BlockId, BlocklistAIActionEvent,
-    BlocklistAIActionModel, BlocklistAIHistoryModel, CancellationReason, FailedOutputPresentation,
-    MessageId, ModelEvent, ModelEventDispatcher, ReceivedMessageDisplay, SummarizationType,
-    TerminalModel, TodoOperation, TodoStatus, failed_output_presentation,
-    should_show_failed_output_usage_notice,
+    BlocklistAIActionModel, BlocklistAIHistoryModel, CancellationReason,
+    FAILED_OUTPUT_USAGE_NOTICE_TEXT, FailedOutputPresentation, MessageId, ModelEvent,
+    ModelEventDispatcher, ReceivedMessageDisplay, SummarizationType, TerminalModel, TodoOperation,
+    TodoStatus, failed_output_presentation, should_show_failed_output_usage_notice,
 };
 use warpui::SingletonEntity;
 use warpui_core::elements::MouseStateHandle;
@@ -57,6 +57,9 @@ use crate::tui_plan_view::{TuiPlanView, TuiPlanViewEvent};
 const PLANS_URL: &str = "https://www.warp.dev/pricing";
 const BYOK_DOCS_URL: &str =
     "https://docs.warp.dev/agent-platform/inference/bring-your-own-api-key/";
+const COMPARE_PLANS_LABEL: &str = "Compare plans";
+const USE_YOUR_OWN_API_KEYS_LABEL: &str = "Use your own API keys";
+const FAILURE_WARNING_PREFIX: &str = "⚠ ";
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 struct TuiCodeBlockKey {
@@ -198,12 +201,12 @@ fn render_failure_section(
         | FailedOutputPresentation::AwsBedrockCredentialsExpiredOrInvalid {
             fallback_message: message,
         } => TuiText::from_spans([
-            ("⚠ ".to_owned(), error_style),
+            (FAILURE_WARNING_PREFIX.to_owned(), error_style),
             (message.clone(), body_style),
         ])
         .finish(),
         FailedOutputPresentation::InvalidApiKey { title, detail } => TuiText::from_spans([
-            ("⚠ ".to_owned(), error_style),
+            (FAILURE_WARNING_PREFIX.to_owned(), error_style),
             (
                 (*title).to_owned(),
                 error_style.add_modifier(Modifier::BOLD),
@@ -213,15 +216,15 @@ fn render_failure_section(
         ])
         .finish(),
         FailedOutputPresentation::OutOfCredits {
-            title,
-            detail,
+            message,
             can_use_own_api_keys,
         } => {
             let primary_style = builder.primary_text_style();
             let link_style = primary_style.add_modifier(Modifier::UNDERLINED);
+            let (title, detail) = message.split_once("\n\n").unwrap_or((message.as_str(), ""));
             let compare_plans = TuiHoverable::new(
                 compare_plans_hover_state.clone(),
-                TuiText::new("Compare plans")
+                TuiText::new(COMPARE_PLANS_LABEL)
                     .with_style(link_style)
                     .finish(),
             )
@@ -240,7 +243,7 @@ fn render_failure_section(
                     .child(
                         TuiHoverable::new(
                             byok_hover_state.clone(),
-                            TuiText::new("Use your own API keys")
+                            TuiText::new(USE_YOUR_OWN_API_KEYS_LABEL)
                                 .with_style(link_style)
                                 .finish(),
                         )
@@ -248,20 +251,21 @@ fn render_failure_section(
                         .finish(),
                     );
             }
-            TuiFlex::column()
-                .child(
-                    TuiText::from_spans([
-                        ("!".to_owned(), error_style.add_modifier(Modifier::BOLD)),
-                        (" ".to_owned(), primary_style.add_modifier(Modifier::BOLD)),
-                        ((*title).to_owned(), primary_style),
-                    ])
-                    .finish(),
-                )
-                .child(
+            let mut content = TuiFlex::column().child(
+                TuiText::from_spans([
+                    (FAILURE_WARNING_PREFIX.to_owned(), error_style),
+                    (title.to_owned(), primary_style),
+                ])
+                .finish(),
+            );
+            if !detail.is_empty() {
+                content = content.child(
                     TuiText::new(format!("  {detail}"))
                         .with_style(primary_style)
                         .finish(),
-                )
+                );
+            }
+            content
                 .child(TuiText::new(" ").finish())
                 .child(actions.finish())
                 .finish()
@@ -275,7 +279,7 @@ fn render_failure_section(
 }
 
 fn render_usage_notice(app: &AppContext) -> Box<dyn TuiElement> {
-    TuiText::new("This response won't count towards your usage.")
+    TuiText::new(FAILED_OUTPUT_USAGE_NOTICE_TEXT)
         .with_style(TuiUiBuilder::from_app(app).muted_text_style())
         .finish()
 }
@@ -288,16 +292,15 @@ fn failure_text(presentation: &FailedOutputPresentation) -> String {
         }
         | FailedOutputPresentation::ContextWindowExceeded { message } => message.clone(),
         FailedOutputPresentation::OutOfCredits {
-            title,
-            detail,
+            message,
             can_use_own_api_keys,
         } => {
             let actions = if *can_use_own_api_keys {
-                "Compare plans  or  Use your own API keys"
+                format!("{COMPARE_PLANS_LABEL}  or  {USE_YOUR_OWN_API_KEYS_LABEL}")
             } else {
-                "Compare plans"
+                COMPARE_PLANS_LABEL.to_owned()
             };
-            format!("{title}\n  {detail}\n\n  {actions}")
+            format!("{message}\n\n{actions}")
         }
         FailedOutputPresentation::InvalidApiKey { title, detail } => {
             format!("{title}\n{detail}")
@@ -1375,18 +1378,14 @@ impl TuiAIBlock {
             && let AIBlockOutputStatus::Failed { error, .. } = &status
             && let Some(presentation) = failed_output_presentation(error, app)
         {
-            let is_out_of_credits =
-                matches!(presentation, FailedOutputPresentation::OutOfCredits { .. });
             sections.push(TuiAIBlockSection::Failure(presentation));
-            if !is_out_of_credits
-                && should_show_failed_output_usage_notice(
-                    error,
-                    self.block_model
-                        .is_latest_visible_exchange_in_root_task(app),
-                    self.has_expanded_last_requested_command(app),
-                    self.block_model.is_restored(),
-                )
-            {
+            if should_show_failed_output_usage_notice(
+                error,
+                self.block_model
+                    .is_latest_visible_exchange_in_root_task(app),
+                self.has_expanded_last_requested_command(app),
+                self.block_model.is_restored(),
+            ) {
                 sections.push(TuiAIBlockSection::UsageNotice);
             }
         }
@@ -1687,9 +1686,7 @@ fn section_logical_text(section: &TuiAIBlockSection) -> Option<String> {
         | TuiAIBlockSection::CompletedTodos { .. }
         | TuiAIBlockSection::AgentMessage(_) => None,
         TuiAIBlockSection::Failure(presentation) => Some(failure_text(presentation)),
-        TuiAIBlockSection::UsageNotice => {
-            Some("This response won't count towards your usage.".to_owned())
-        }
+        TuiAIBlockSection::UsageNotice => Some(FAILED_OUTPUT_USAGE_NOTICE_TEXT.to_owned()),
     }
 }
 
