@@ -109,6 +109,7 @@ use self::input_detection::InputDetectionState;
 
 /// Width used before the first layout pass pushes the real terminal width into the editor.
 const INITIAL_INPUT_WIDTH: u16 = 80;
+const INLINE_MENU_TOP_PADDING_ROWS: u16 = 1;
 const MAX_INPUT_TEXT_ROWS: u16 = 6;
 
 /// The footer hint shown while the ctrl-c exit confirmation is armed.
@@ -2921,9 +2922,13 @@ impl TuiView for TuiTerminalSessionView {
         {
             if let (true, Some(menu)) = (input_target.agent_editor_owns_input(), inline_menu) {
                 content = content.child(
-                    TuiConstrainedBox::new(menu)
-                        .with_max_rows(MAX_INLINE_MENU_ROWS)
-                        .finish(),
+                    TuiConstrainedBox::new(
+                        TuiContainer::new(menu)
+                            .with_padding_top(INLINE_MENU_TOP_PADDING_ROWS)
+                            .finish(),
+                    )
+                    .with_max_rows(MAX_INLINE_MENU_ROWS + INLINE_MENU_TOP_PADDING_ROWS)
+                    .finish(),
                 );
             }
             let border_style = if self.is_shell_mode(ctx) {

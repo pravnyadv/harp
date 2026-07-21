@@ -9,18 +9,20 @@ use warpui::{
     AddWindowOptions, EntityIdMap, ModelHandle, ReadModel, SingletonEntity, UpdateModel, ViewHandle,
 };
 use warpui_core::elements::tui::{
-    Color, TuiBuffer, TuiBufferExt, TuiConstraint, TuiElement, TuiLayoutContext, TuiPaintContext,
-    TuiPaintSurface, TuiRect, TuiScreenPosition, TuiSize, TuiStyle,
+    Color, TuiBuffer, TuiBufferExt, TuiConstrainedBox, TuiConstraint, TuiContainer, TuiElement,
+    TuiLayoutContext, TuiPaintContext, TuiPaintSurface, TuiRect, TuiScreenPosition, TuiSize,
+    TuiStyle, TuiText,
 };
 use warpui_core::keymap::{Context, Keystroke, Trigger};
 use warpui_core::presenter::tui::TuiPresenter;
 use warpui_core::{App, AppContext, TuiView, WindowInvalidation};
 
 use super::{
-    TuiTerminalSessionEvent, export_file_success_message, log_bundle_success_message,
-    raw_prompt_if_not_blank, render_left_footer_hint,
+    INLINE_MENU_TOP_PADDING_ROWS, TuiTerminalSessionEvent, export_file_success_message,
+    log_bundle_success_message, raw_prompt_if_not_blank, render_left_footer_hint,
 };
 use crate::autoupdate::TuiAutoupdater;
+use crate::inline_menu::MAX_INLINE_MENU_ROWS;
 use crate::keybindings::{
     CONTEXTUAL_PLAN_TOGGLE_BINDING_NAME, KEYBOARD_ENHANCEMENT_AVAILABLE_FLAG,
     PLAN_TOGGLE_AVAILABLE_FLAG, PLAN_TOGGLE_BINDING_NAME, TUI_BINDING_GROUP,
@@ -48,6 +50,34 @@ fn log_bundle_success_message_includes_the_absolute_path() {
         log_bundle_success_message(path),
         "Log bundle saved to /tmp/warp-20260718-132640.zip"
     );
+}
+#[test]
+fn inline_menu_padding_preserves_result_capacity() {
+    App::test((), |app| async move {
+        app.read(|ctx| {
+            let menu_rows = (0..MAX_INLINE_MENU_ROWS)
+                .map(|row| format!("menu {row}"))
+                .collect::<Vec<_>>();
+            let menu = TuiConstrainedBox::new(
+                TuiContainer::new(TuiText::new(menu_rows.join("\n")).finish())
+                    .with_padding_top(INLINE_MENU_TOP_PADDING_ROWS)
+                    .finish(),
+            )
+            .with_max_rows(MAX_INLINE_MENU_ROWS + INLINE_MENU_TOP_PADDING_ROWS)
+            .finish();
+            let lines = render_element_with_size(
+                menu,
+                ctx,
+                20,
+                MAX_INLINE_MENU_ROWS + INLINE_MENU_TOP_PADDING_ROWS,
+            )
+            .to_lines();
+
+            assert_eq!(lines.len(), usize::from(MAX_INLINE_MENU_ROWS + 1));
+            assert!(lines[0].trim().is_empty());
+            assert_eq!(&lines[1..], menu_rows);
+        });
+    });
 }
 
 fn focus_test_fixture(app: &mut App) -> FocusTestFixture {
