@@ -384,6 +384,21 @@ impl TuiInputView {
         ctx.notify();
     }
 
+    pub(crate) fn insert_typeahead_text(
+        &mut self,
+        previously_inserted: CharOffset,
+        text: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.model.update(ctx, |model, ctx| {
+            model.replace_first_n_characters(previously_inserted, text, ctx);
+            let end = model.content().as_ref(ctx).max_charoffset();
+            model.cursor_at(end, ctx);
+        });
+        self.follow_cursor(ctx);
+        ctx.notify();
+    }
+
     /// Inserts a paste payload after the parent declines to consume it as
     /// structured input.
     pub(crate) fn insert_pasted_text(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
