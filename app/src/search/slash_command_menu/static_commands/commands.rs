@@ -37,6 +37,18 @@ pub const ADD_MCP: StaticCommand = StaticCommand {
     argument: None,
 };
 
+pub const AUTO_APPROVE: StaticCommand = StaticCommand {
+    name: "/auto-approve",
+    description: "Toggle auto approve",
+    icon_path: "bundled/svg/fast-forward.svg",
+    availability: Availability::AGENT_VIEW
+        .union(Availability::ACTIVE_CONVERSATION)
+        .union(Availability::AI_ENABLED)
+        .union(Availability::NOT_CLOUD_AGENT),
+    auto_enter_ai_mode: false,
+    argument: None,
+};
+
 pub const MCP: StaticCommand = StaticCommand {
     name: "/mcp",
     description: "View and manage MCP servers",
@@ -687,6 +699,7 @@ fn all_commands(settings_mode: settings::SettingsMode) -> Vec<StaticCommand> {
     }
     if settings_mode == settings::SettingsMode::Tui {
         commands.extend([
+            AUTO_APPROVE,
             MCP,
             EXIT,
             VIEW_LOGS,

@@ -6,10 +6,10 @@ use warp::appearance::Appearance;
 use warp::settings::{AISettings, TuiUsageDisplayMode};
 use warp::terminal::model::ansi::{Handler, InputBufferValue};
 use warp::tui_export::{
-    AIConversationId, AgentViewEntryOrigin, BlockPadding, BlocklistAIHistoryModel,
-    ConversationStatus, ConversationUsageTotals, Harness, InputType, LLMPreferences, PtyIntent,
-    PtyIntentEvent, SizeInfo, SizeUpdate, TranscriptScope, export_conversation_markdown,
-    register_tui_session_view_test_singletons, slash_commands,
+    AIConversationAutoexecuteMode, AIConversationId, AgentViewEntryOrigin, BlockPadding,
+    BlocklistAIHistoryModel, ConversationStatus, ConversationUsageTotals, Harness, InputType,
+    LLMPreferences, PtyIntent, PtyIntentEvent, SizeInfo, SizeUpdate, TranscriptScope,
+    export_conversation_markdown, register_tui_session_view_test_singletons, slash_commands,
 };
 use warp_core::settings::Setting as _;
 use warp_editor::model::CoreEditorModel;
@@ -30,10 +30,12 @@ use warpui_core::telemetry::{EventPayload, flush_events};
 use warpui_core::{App, AppContext, TuiView, TypedActionView as _, WindowInvalidation};
 
 use super::{
-    CTRL_C_EXIT_HINT, ConversationRestoreState, FooterSegments, INLINE_MENU_TOP_PADDING_ROWS,
+    AUTO_APPROVE_FEEDBACK_DURATION, AUTO_APPROVE_TOGGLE_BINDING_NAME, CTRL_C_EXIT_HINT,
+    ConversationRestoreState, FooterSegments, INLINE_MENU_TOP_PADDING_ROWS,
     LOADING_CONVERSATION_HINT, SHELL_MODE_HINT, TuiConversationRestoreOrigin,
-    TuiTerminalSessionAction, TuiTerminalSessionEvent, export_file_success_message,
-    log_bundle_success_message, raw_prompt_if_not_blank, render_status_footer_row,
+    TuiTerminalSessionAction, TuiTerminalSessionEvent, TuiTerminalSessionView,
+    export_file_success_message, log_bundle_success_message, raw_prompt_if_not_blank,
+    render_status_footer_row,
 };
 use crate::autoupdate::TuiAutoupdater;
 use crate::inline_menu::MAX_INLINE_MENU_ROWS;
@@ -224,7 +226,117 @@ fn toggle_model_menu_action_opens_and_closes_the_inline_model_menu() {
         });
     });
 }
+#[test]
+fn auto_approve_slash_command_toggles_selected_conversation_off_on_off() {
+    App::test((), |mut app| async move {
+        assert_eq!(
+            AUTO_APPROVE_FEEDBACK_DURATION,
+            std::time::Duration::from_secs(3)
+        );
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
 
+        // New TUI conversations default to `RespectUserSettings` (off).
+        view.read(&app, |view, ctx| {
+            assert_eq!(
+                view.conversation_selection
+                    .as_ref(ctx)
+                    .pending_query_autoexecute_override(ctx),
+                AIConversationAutoexecuteMode::RespectUserSettings
+            );
+            assert!(view.auto_approve_feedback_conversation_id.is_none());
+        });
+
+        // Invoking `/auto-approve` executes the TUI `AutoApprove` arm and toggles
+        // the selected conversation on.
+        view.update(&mut app, |view, ctx| {
+            view.execute_tui_slash_command(&slash_commands::AUTO_APPROVE, None, ctx);
+        });
+        view.read(&app, |view, ctx| {
+            assert_eq!(
+                view.conversation_selection
+                    .as_ref(ctx)
+                    .pending_query_autoexecute_override(ctx),
+                AIConversationAutoexecuteMode::RunToCompletion
+            );
+            assert_eq!(
+                view.auto_approve_feedback_conversation_id,
+                view.conversation_selection
+                    .as_ref(ctx)
+                    .selected_conversation_id(ctx)
+            );
+        });
+
+        // Invoking `/auto-approve` again toggles it back off.
+        view.update(&mut app, |view, ctx| {
+            view.execute_tui_slash_command(&slash_commands::AUTO_APPROVE, None, ctx);
+        });
+        view.read(&app, |view, ctx| {
+            assert_eq!(
+                view.conversation_selection
+                    .as_ref(ctx)
+                    .pending_query_autoexecute_override(ctx),
+                AIConversationAutoexecuteMode::RespectUserSettings
+            );
+            assert_eq!(
+                view.auto_approve_feedback_conversation_id,
+                view.conversation_selection
+                    .as_ref(ctx)
+                    .selected_conversation_id(ctx)
+            );
+        });
+    });
+}
+
+#[test]
+fn auto_approve_actions_control_transient_color_feedback() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        view.update(&mut app, |view, ctx| {
+            view.handle_action(
+                &TuiTerminalSessionAction::ToggleAutoApprove {
+                    show_feedback: true,
+                },
+                ctx,
+            );
+        });
+        view.read(&app, |view, ctx| {
+            assert_eq!(
+                view.conversation_selection
+                    .as_ref(ctx)
+                    .pending_query_autoexecute_override(ctx),
+                AIConversationAutoexecuteMode::RunToCompletion
+            );
+            assert_eq!(
+                view.auto_approve_feedback_conversation_id,
+                view.conversation_selection
+                    .as_ref(ctx)
+                    .selected_conversation_id(ctx)
+            );
+        });
+
+        view.update(&mut app, |view, ctx| {
+            view.handle_action(
+                &TuiTerminalSessionAction::ToggleAutoApprove {
+                    show_feedback: false,
+                },
+                ctx,
+            );
+        });
+        view.read(&app, |view, ctx| {
+            assert_eq!(
+                view.conversation_selection
+                    .as_ref(ctx)
+                    .pending_query_autoexecute_override(ctx),
+                AIConversationAutoexecuteMode::RespectUserSettings
+            );
+            assert!(view.auto_approve_feedback_conversation_id.is_none());
+            assert!(view.auto_approve_feedback_timer.is_none());
+        });
+    });
+}
 #[test]
 fn footer_model_label_is_a_bounded_click_target() {
     App::test((), |mut app| async move {
@@ -1293,6 +1405,28 @@ fn plan_toggle_uses_contextual_ctrl_p_and_ctrl_shift_p() {
     });
 }
 
+#[test]
+fn auto_approve_uses_ctrl_shift_i() {
+    App::test((), |mut app| async move {
+        app.update(crate::keybindings::init);
+        app.read(|ctx| {
+            let binding = ctx
+                .editable_bindings()
+                .find(|binding| binding.name == AUTO_APPROVE_TOGGLE_BINDING_NAME)
+                .expect("auto-approve toggle binding");
+            assert_eq!(
+                *binding.trigger,
+                Trigger::Keystrokes(vec![Keystroke::parse("ctrl-shift-I").unwrap()])
+            );
+
+            let mut session_context = Context::default();
+            session_context
+                .set
+                .insert(TuiTerminalSessionView::ui_name());
+            assert!(binding.in_context(&session_context));
+        });
+    });
+}
 #[test]
 fn ctrl_d_is_owned_by_the_session_surface_not_input_delete_forward() {
     App::test((), |mut app| async move {

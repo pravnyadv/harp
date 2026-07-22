@@ -3,7 +3,8 @@ use warp::appearance::Appearance;
 use warp::editor::CodeEditorModel;
 use warp::tui_export::{
     AcceptSlashCommandOrSavedPrompt, DetectedCommand, DetectedSkillCommand,
-    ParsedSlashCommandInput, SlashCommandId, SlashCommandMixer, slash_commands,
+    ParsedSlashCommandInput, SlashCommandId, SlashCommandMixer,
+    register_tui_session_view_test_singletons, slash_commands,
 };
 use warp_search_core::inline_menu::InlineMenuSelection;
 use warpui_core::elements::tui::{
@@ -19,6 +20,7 @@ use super::{
 };
 use crate::inline_menu::{TuiInlineMenu, keep_selected_visible};
 use crate::input_suggestions_mode::{TuiInputSuggestionsMode, TuiInputSuggestionsModeModel};
+use crate::test_fixtures::add_test_conversation_selection;
 
 fn parsed_skill(argument: Option<&str>) -> ParsedSlashCommandInput {
     ParsedSlashCommandInput::SkillCommand(DetectedSkillCommand {
@@ -39,11 +41,13 @@ fn slash_command_menu_renders_view_logs_row() {
                 mode.set_mode(TuiInputSuggestionsMode::SlashCommands, ctx);
             });
             let mixer = ctx.add_model(|_| SlashCommandMixer::new());
+            let conversation_selection = add_test_conversation_selection(ctx);
             let model = ctx.add_model(|_| {
                 TuiSlashCommandModel::new_for_test(
                     input_editor,
                     suggestions_mode,
                     mixer,
+                    conversation_selection,
                     vec![TuiSlashCommandRow {
                         title: "/view-logs".to_owned(),
                         description: Some("Bundle your TUI logs into a zip archive".to_owned()),
@@ -54,7 +58,7 @@ fn slash_command_menu_renders_view_logs_row() {
                     0,
                 )
             });
-            let menu = TuiInlineMenu::new(model);
+            let menu = TuiInlineMenu::new(model.clone());
             let element = menu.render(ctx).expect("slash command menu should render");
             let lines = render_menu_lines(element, ctx);
 
@@ -63,6 +67,61 @@ fn slash_command_menu_renders_view_logs_row() {
                 lines
                     .iter()
                     .any(|line| line.contains("Bundle your TUI logs"))
+            );
+        });
+    });
+}
+
+#[test]
+fn slash_command_menu_renders_auto_approve_row() {
+    App::test((), |mut app| async move {
+        register_tui_session_view_test_singletons(&mut app);
+        app.update(|ctx| {
+            let input_editor = ctx.add_model(|ctx| CodeEditorModel::new_tui(80, ctx));
+            let suggestions_mode = ctx.add_model(|_| TuiInputSuggestionsModeModel::new());
+            suggestions_mode.update(ctx, |mode, ctx| {
+                mode.set_mode(TuiInputSuggestionsMode::SlashCommands, ctx);
+            });
+            let mixer = ctx.add_model(|_| SlashCommandMixer::new());
+            let conversation_selection = add_test_conversation_selection(ctx);
+            // Source the title and description from the real `/auto-approve`
+            // static command so the snapshot tracks the registered contract.
+            let model = ctx.add_model(|_| {
+                TuiSlashCommandModel::new_for_test(
+                    input_editor,
+                    suggestions_mode,
+                    mixer,
+                    conversation_selection.clone(),
+                    vec![TuiSlashCommandRow {
+                        title: slash_commands::AUTO_APPROVE.name.to_owned(),
+                        description: Some(slash_commands::AUTO_APPROVE.description.to_owned()),
+                        action: AcceptSlashCommandOrSavedPrompt::SlashCommand {
+                            id: SlashCommandId::new(),
+                        },
+                    }],
+                    0,
+                )
+            });
+            let menu = TuiInlineMenu::new(model.clone());
+            let element = menu.render(ctx).expect("slash command menu should render");
+            let lines = render_menu_lines(element, ctx);
+
+            assert!(lines.iter().any(|line| line.contains("/auto-approve")));
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.contains("Toggle auto approve (currently off)"))
+            );
+
+            conversation_selection.update(ctx, |selection, ctx| {
+                selection.toggle_pending_query_autoexecute(ctx);
+            });
+            let element = menu.render(ctx).expect("slash command menu should render");
+            let lines = render_menu_lines(element, ctx);
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.contains("Toggle auto approve (currently on)"))
             );
         });
     });
@@ -252,8 +311,16 @@ fn completed_empty_results_close_the_menu() {
             mode.set_mode(TuiInputSuggestionsMode::SlashCommands, ctx);
         });
         let mixer = app.add_model(|_| SlashCommandMixer::new());
+        let conversation_selection = app.update(add_test_conversation_selection);
         let model = app.add_model(|_| {
-            TuiSlashCommandModel::new_for_test(input_editor, suggestions_mode, mixer, Vec::new(), 0)
+            TuiSlashCommandModel::new_for_test(
+                input_editor,
+                suggestions_mode,
+                mixer,
+                conversation_selection,
+                Vec::new(),
+                0,
+            )
         });
 
         model.update(&mut app, |model, ctx| model.refresh_rows(ctx));
@@ -273,11 +340,13 @@ fn assert_explicit_menu_blocks_slash_commands(explicit_mode: TuiInputSuggestions
             mode.set_mode(TuiInputSuggestionsMode::SlashCommands, ctx);
         });
         let mixer = app.add_model(|_| SlashCommandMixer::new());
+        let conversation_selection = app.update(add_test_conversation_selection);
         let model = app.add_model(|_| {
             TuiSlashCommandModel::new_for_test(
                 input_editor,
                 suggestions_mode.clone(),
                 mixer,
+                conversation_selection,
                 vec![TuiSlashCommandRow {
                     title: "Test command".to_owned(),
                     description: None,
@@ -333,11 +402,13 @@ fn accepting_a_result_does_not_disable_input_driven_lifecycle() {
         });
         let mixer = app.add_model(|_| SlashCommandMixer::new());
         let command_id = SlashCommandId::new();
+        let conversation_selection = app.update(add_test_conversation_selection);
         let model = app.add_model(|_| {
             TuiSlashCommandModel::new_for_test(
                 input_editor,
                 suggestions_mode,
                 mixer,
+                conversation_selection,
                 vec![TuiSlashCommandRow {
                     title: "Test command".to_owned(),
                     description: None,
