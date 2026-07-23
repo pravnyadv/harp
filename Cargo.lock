@@ -2451,6 +2451,7 @@ dependencies = [
  "instant",
  "is_executable",
  "log",
+ "nix 0.26.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",
