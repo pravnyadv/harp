@@ -1567,6 +1567,7 @@ pub(crate) fn convert_tool_call_result_to_input(
             };
             let run_agents_result = match &result.outcome {
                 Some(api::run_agents_result::Outcome::Launched(launched)) => {
+                    #[allow(deprecated)]
                     let execution_mode = match &launched.resolved_execution_mode {
                         Some(api::run_agents_result::launched::ResolvedExecutionMode::Remote(
                             remote,
@@ -1584,6 +1585,8 @@ pub(crate) fn convert_tool_call_result_to_input(
                         .iter()
                         .map(|outcome| RunAgentsAgentOutcome {
                             name: outcome.name.clone(),
+                            // Proto field is model_id (renamed from resolved_model_id).
+                            resolved_model_id: outcome.model_id.clone(),
                             kind: match &outcome.result {
                                 Some(api::run_agents_result::agent_outcome::Result::Launched(
                                     launched_agent,
@@ -1601,13 +1604,17 @@ pub(crate) fn convert_tool_call_result_to_input(
                             },
                         })
                         .collect();
+                    #[allow(deprecated)]
+                    let model_id = launched.resolved_model_id.clone();
+                    #[allow(deprecated)]
+                    let harness_type =
+                        crate::ai::agent::api::convert_from::convert_run_agents_harness(
+                            launched.resolved_harness.as_ref(),
+                        )
+                        .unwrap_or_default();
                     RunAgentsResult::Launched {
-                        model_id: launched.resolved_model_id.clone(),
-                        harness_type:
-                            crate::ai::agent::api::convert_from::convert_run_agents_harness(
-                                launched.resolved_harness.as_ref(),
-                            )
-                            .unwrap_or_default(),
+                        model_id,
+                        harness_type,
                         execution_mode,
                         agents,
                     }

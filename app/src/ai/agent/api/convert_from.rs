@@ -93,16 +93,18 @@ pub(crate) fn convert_run_agents_harness(harness: Option<&api::Harness>) -> Opti
 }
 
 fn convert_run_agents_execution_mode(
-    execution_mode: Option<api::run_agents::ExecutionMode>,
+    execution_mode: Option<api::run_agents::ExecutionModeOneOf>,
 ) -> RunAgentsExecutionMode {
     match execution_mode {
-        Some(api::run_agents::ExecutionMode::Remote(remote)) => RunAgentsExecutionMode::Remote {
-            environment_id: remote.environment_id,
-            worker_host: remote.worker_host,
-            computer_use_enabled: remote.computer_use_enabled,
-            runner_id: remote.runner_id,
-        },
-        Some(api::run_agents::ExecutionMode::Local(_)) | None => RunAgentsExecutionMode::Local,
+        Some(api::run_agents::ExecutionModeOneOf::Remote(remote)) => {
+            RunAgentsExecutionMode::Remote {
+                environment_id: remote.environment_id,
+                worker_host: remote.worker_host,
+                computer_use_enabled: remote.computer_use_enabled,
+                runner_id: remote.runner_id,
+            }
+        }
+        Some(api::run_agents::ExecutionModeOneOf::Local(_)) | None => RunAgentsExecutionMode::Local,
     }
 }
 
@@ -137,6 +139,7 @@ fn convert_run_agents(
                 prompt: config.prompt,
                 title: config.title,
                 agent_identity_uid: config.agent_identity_uid,
+                model_id: config.model_id,
             })
             .collect(),
         plan_id,
