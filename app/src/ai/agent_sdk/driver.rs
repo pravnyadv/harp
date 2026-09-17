@@ -362,13 +362,16 @@ impl<T: Send + 'static> IdleTimeoutSender<T> {
         }
     }
 
-    /// End the run with `value`, deferring by `idle_timeout` when set and completing immediately
-    /// when it is `None`.
+    /// End the run with `value`, deferring by a positive `idle_timeout` and completing immediately
+    /// for zero or `None`.
     fn complete_with_optional_idle(&self, idle_timeout: Option<Duration>, value: T) {
-        if let Some(idle_timeout) = idle_timeout {
-            self.end_run_after(idle_timeout, value);
-        } else {
-            self.end_run_now(value);
+        match idle_timeout {
+            Some(Duration::ZERO) => {
+                self.cancel_idle_timeout();
+                self.end_run_now(value);
+            }
+            Some(idle_timeout) => self.end_run_after(idle_timeout, value),
+            None => self.end_run_now(value),
         }
     }
 }
