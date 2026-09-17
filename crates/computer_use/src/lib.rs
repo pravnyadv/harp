@@ -270,10 +270,10 @@ pub trait Actor: Send + Sync + 'static {
 
 /// Returns a recorder that can capture a video of the computer-use display.
 ///
-/// A real recorder is available on Linux (X11) and macOS (avfoundation); every
-/// other platform, and any `test-util` build, gets a no-op recorder that reports
-/// recording as unsupported. On macOS, setting `WARP_MOCK_RECORDER` opts into a
-/// mock recorder for UI testing (see `mock`).
+/// Real recorders are available on Linux (X11), macOS (avfoundation), and
+/// Windows (gdigrab). Other platforms and any `test-util` build get a no-op
+/// recorder. On macOS, setting `WARP_MOCK_RECORDER` opts into a mock recorder
+/// for UI testing (see `mock`).
 pub fn create_recorder() -> Box<dyn Recorder> {
     #[cfg(macos)]
     if std::env::var_os("WARP_MOCK_RECORDER").is_some() {
@@ -420,7 +420,7 @@ pub struct RecordingHandle {
     // construct a handle.
     #[cfg(any(linux, macos, windows))]
     path: PathBuf,
-    #[cfg(any(linux, macos))]
+    #[cfg(any(linux, macos, windows))]
     started_at: instant::Instant,
     #[cfg(any(linux, macos, windows))]
     process: Option<tokio::process::Child>,
@@ -479,7 +479,7 @@ impl RecordingHandle {
             exit_state: exit_state.clone(),
             #[cfg(any(linux, macos, windows))]
             path: PathBuf::new(),
-            #[cfg(any(linux, macos))]
+            #[cfg(any(linux, macos, windows))]
             started_at: instant::Instant::now(),
             #[cfg(any(linux, macos, windows))]
             process: None,
@@ -493,11 +493,16 @@ impl RecordingHandle {
 #[cfg(any(linux, macos, windows))]
 impl Drop for RecordingHandle {
     fn drop(&mut self) {
-        // A handle can be abandoned without reaching `Recorder::stop`, notably
-        // when a start action finishes after cancellation. The child process's
-        // kill-on-drop handles ffmpeg; this removes its partial output. A
-        // successful stop disables cleanup and transfers file ownership.
         if self.cleanup_on_drop {
+            // Windows can't delete a file ffmpeg still has open, and `Drop` can't `.await` a
+            // process reap, so cleanup runs on a background thread there instead of blocking
+            // (or leaking the file) here; see `windows::recording::spawn_abandoned_cleanup`.
+            // POSIX allows unlinking a still-open file, so mac/Linux clean up synchronously.
+            #[cfg(windows)]
+            if let Some(process) = self.process.take() {
+                imp::spawn_abandoned_cleanup(process, self.path.clone());
+                return;
+            }
             let _ = std::fs::remove_file(&self.path);
             let _ = std::fs::remove_file(self.path.with_extension("log"));
         }
