@@ -4668,6 +4668,7 @@ fn typed_secret_entries(secret: &ManagedSecretValue) -> Vec<(&'static str, &str)
         // A registry credential authenticates an image pull, not the agent process, and
         // is never injected into the terminal session.
         ManagedSecretValue::DockerRegistry { .. } => vec![],
+        ManagedSecretValue::AwsEcrCredential { .. } => vec![],
     }
 }
 
