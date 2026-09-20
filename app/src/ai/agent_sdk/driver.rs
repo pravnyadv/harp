@@ -926,7 +926,10 @@ pub enum AgentDriverError {
         conversation_id: String,
     },
     #[error("Harness command exited with code {exit_code}")]
-    HarnessCommandFailed { exit_code: i32 },
+    HarnessCommandFailed {
+        exit_code: i32,
+        output: Option<String>,
+    },
     #[error("Harness '{harness}' setup failed: {reason}")]
     HarnessSetupFailed { harness: String, reason: String },
     #[error("Harness '{harness}' config setup failed")]
@@ -3211,7 +3214,7 @@ impl AgentDriver {
         let mut harness_exit_rx = harness_exit_rx.fuse();
 
         let scanner_fut = harness_output_monitor::watch_block_for_errors(
-            block_id,
+            block_id.clone(),
             runtime_error_patterns,
             foreground,
         )
@@ -3307,6 +3310,12 @@ impl AgentDriver {
             }
         };
 
+        let failure_output = match command_result.as_ref() {
+            Ok(exit_code) if !exit_code.was_successful() => {
+                Self::fetch_harness_failure_output(&block_id, foreground).await
+            }
+            Ok(_) | Err(_) => None,
+        };
         // Final save after the command finishes.
         log::debug!("Triggering final save of harness conversation data");
         let final_save_result = runner
@@ -3349,8 +3358,27 @@ impl AgentDriver {
         } else {
             Err(AgentDriverError::HarnessCommandFailed {
                 exit_code: exit_code.value(),
+                output: failure_output,
             })
         }
+    }
+
+    async fn fetch_harness_failure_output(
+        block_id: &BlockId,
+        foreground: &ModelSpawner<Self>,
+    ) -> Option<String> {
+        let block_id = block_id.clone();
+        foreground
+            .spawn(move |me, ctx| {
+                me.terminal_driver
+                    .as_ref(ctx)
+                    .block_output_plaintext(&block_id, ctx)
+            })
+            .await
+            .ok()
+            .flatten()
+            .map(|output| harness::prepare_harness_failure_output(&output))
+            .filter(|output| !output.is_empty())
     }
 
     /// `/exit`, then a follow-up Enter after [`HARNESS_EXIT_FOLLOWUP_DELAY`],
