@@ -495,8 +495,16 @@ impl<T: Clone + Send + 'static> DebugWindowController<T> {
 /// The code must stay `EnvironmentSetupFailed`: `TaskStatusMessage::is_environment_setup_failure`
 /// matches that variant alone, and the cloud-continuation resolver keys its no-CTA tombstone off
 /// that check.
-fn setup_failure_status_update(message: String) -> TaskStatusUpdate {
-    TaskStatusUpdate::with_error_code(message, PlatformErrorCode::EnvironmentSetupFailed)
+fn setup_failure_status_update(error: &AgentDriverError) -> TaskStatusUpdate {
+    match error {
+        AgentDriverError::SetupCommandFailed {
+            command, output, ..
+        } => error_classification::setup_command_status_update(error, command, output.as_deref()),
+        _ => TaskStatusUpdate::with_error_code(
+            error.to_string(),
+            PlatformErrorCode::EnvironmentSetupFailed,
+        ),
+    }
 }
 
 /// The post-failure debug window's deadline, `window` from now. Shared by
@@ -866,6 +874,12 @@ pub enum AgentDriverError {
     EnvironmentNotFound(String),
     #[error("Environment setup failed: {0}")]
     EnvironmentSetupFailed(String),
+    #[error("Environment setup failed: {message}")]
+    SetupCommandFailed {
+        message: String,
+        command: String,
+        output: Option<String>,
+    },
     #[error("Cloud provider setup failed")]
     CloudProviderSetupFailed(#[from] cloud_provider::CloudProviderSetupError),
     #[error("Could not resolve working directory {}", path.display())]
@@ -1028,10 +1042,18 @@ impl From<warpui::ModelDropped> for AgentDriverError {
 
 impl From<PrepareEnvironmentError> for AgentDriverError {
     fn from(error: PrepareEnvironmentError) -> Self {
+        let message = error.to_string();
         match error {
             PrepareEnvironmentError::InvalidRuntimeState => AgentDriverError::InvalidRuntimeState,
             PrepareEnvironmentError::TerminalDriver { source } => source,
-            error => AgentDriverError::EnvironmentSetupFailed(error.to_string()),
+            PrepareEnvironmentError::SetupCommand { command, output } => {
+                AgentDriverError::SetupCommandFailed {
+                    message,
+                    command,
+                    output,
+                }
+            }
+            _ => AgentDriverError::EnvironmentSetupFailed(message),
         }
     }
 }
@@ -1627,6 +1649,7 @@ impl AgentDriver {
                 if matches!(
                     err,
                     AgentDriverError::EnvironmentSetupFailed(_)
+                        | AgentDriverError::SetupCommandFailed { .. }
                         | AgentDriverError::SetupCommandExitedShell { .. }
                 ) {
                     let _ = foreground_for_error
@@ -2721,7 +2744,6 @@ impl AgentDriver {
         error: &AgentDriverError,
         window: Duration,
     ) {
-        let message = error.to_string();
         let resolved = foreground
             .spawn(|me, ctx| {
                 me.task_id
@@ -2732,7 +2754,7 @@ impl AgentDriver {
             return;
         };
 
-        let status = setup_failure_status_update(message);
+        let status = setup_failure_status_update(error);
         let deadline = debug_window_deadline(window);
         if let Err(error) = ai_client
             .update_agent_task(
