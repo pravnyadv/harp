@@ -2777,7 +2777,7 @@ impl TypedActionView for WarpAgentPageView {
             WarpAgentPageAction::RefreshAwsBedrockCredentials => {
                 #[cfg(not(target_family = "wasm"))]
                 ApiKeyManager::handle(ctx).update(ctx, |manager, ctx| {
-                    drop(refresh_local_chain_aws_credentials(manager, ctx));
+                    refresh_local_chain_aws_credentials(manager, ctx);
                 });
                 ctx.notify();
             }

@@ -488,10 +488,10 @@ pub enum GrokRefreshOutcome {
     Failed,
 }
 
-/// Who refreshes the AWS credentials held by [`ApiKeyManager`].
+/// Controls how AWS credentials are refreshed by [`ApiKeyManager`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum AwsCredentialsRefreshStrategy {
-    /// Ambient triggers reload them from the local AWS credential chain (~/.aws).
+    /// Load credentials from the local AWS credential chain (~/.aws). This is the default.
     #[default]
     LocalChain,
     /// An agent run mints them via OIDC/STS and refreshes them itself; ambient triggers must
@@ -960,8 +960,12 @@ impl ApiKeyManager {
     pub fn set_aws_credentials_refresh_strategy(
         &mut self,
         strategy: AwsCredentialsRefreshStrategy,
+        ctx: &mut ModelContext<Self>,
     ) {
-        self.aws_credentials_refresh_strategy = strategy;
+        if self.aws_credentials_refresh_strategy != strategy {
+            self.aws_credentials_refresh_strategy = strategy;
+            self.set_aws_credentials_state(AwsCredentialsState::Missing, ctx);
+        }
     }
 
     /// Builds the `CustomModelProviders` registry that ships with every agent request.
