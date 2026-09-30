@@ -602,6 +602,8 @@ pub struct AgentDriverOptions {
     pub secrets: HashMap<String, ManagedSecretValue>,
     /// ID of the task being executed.
     pub task_id: Option<AmbientAgentTaskId>,
+    /// Server-owned experiments retained without client interpretation.
+    pub experimental: Option<serde_json::Map<String, serde_json::Value>>,
     /// Parent run ID for child orchestration flows, if this task was spawned by another run.
     pub parent_run_id: Option<String>,
     /// Whether the agent run should share its session.
@@ -679,6 +681,11 @@ pub struct AgentDriver {
 
     // The associated task ID for this agent run, if any.
     task_id: Option<AmbientAgentTaskId>,
+    #[allow(
+        dead_code,
+        reason = "the driver retains server-owned experiments without interpreting them"
+    )]
+    pub experimental: Option<serde_json::Map<String, serde_json::Value>>,
     team_scope: Option<HeadlessTeamScope>,
     bedrock_oidc_credentials: Option<BedrockOidcCredentialsConfig>,
 
@@ -1072,6 +1079,7 @@ impl AgentDriver {
         let AgentDriverOptions {
             working_dir,
             task_id,
+            experimental,
             parent_run_id,
             should_share,
             idle_on_complete,
@@ -1257,6 +1265,7 @@ impl AgentDriver {
             resolved_env_vars,
             output_format: OutputFormat::default(),
             task_id,
+            experimental,
             team_scope,
             bedrock_oidc_credentials,
             harness: None,
@@ -1311,6 +1320,7 @@ impl AgentDriver {
             resolved_env_vars: Arc::new(HashMap::new()),
             output_format: OutputFormat::default(),
             task_id: None,
+            experimental: None,
             team_scope: None,
             bedrock_oidc_credentials: None,
             harness: None,
