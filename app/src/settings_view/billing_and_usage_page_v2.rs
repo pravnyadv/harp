@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use ::ai::api_keys::{ApiKeyManager, ApiKeyManagerEvent};
 use chrono::Local;
-use itertools::Itertools;
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
@@ -52,6 +51,7 @@ use crate::auth::auth_view_modal::AuthViewVariant;
 use crate::auth::{AuthManager, AuthStateProvider};
 use crate::modal::{Modal, ModalEvent, ModalViewState};
 use crate::pricing::PricingInfoModel;
+use crate::pricing::addon_pack::PackAmount;
 use crate::server::ids::ServerId;
 use crate::server::telemetry::TelemetryEvent;
 use crate::settings::ai::{AISettings, AISettingsChangedEvent};
@@ -69,10 +69,15 @@ use crate::{WorkspaceAction, send_telemetry_from_ctx};
 const ADDON_CREDITS_DESCRIPTION: &str = "Add-on credits are purchased in prepaid packages that roll over each billing cycle and expire after one year. The more you purchase, the better the per-credit rate. Once your base plan credits are used, add-on credits will be consumed.";
 const ADDITIONAL_ADDON_CREDITS_DESCRIPTION_FOR_TEAM: &str =
     "Purchased add-on credits are added to your team's shared credit pool.";
+const ADDON_USAGE_DESCRIPTION: &str = "Usage rolls over each billing cycle and expires after one year. Once your base plan usage is depleted, any additional purchased usage will be consumed.";
+const ADDITIONAL_ADDON_USAGE_DESCRIPTION_FOR_TEAM: &str =
+    "Purchased usage is added to your team's shared pool.";
 const MANAGED_AUTO_RELOAD_HEADER: &str = "Auto-reload is enabled";
 
 const ADDON_CREDITS_DELINQUENT_WARNING_STRING: &str =
     "Restricted due to billing issue. Update your payment method to purchase add-on credits.";
+const ADDON_USAGE_DELINQUENT_WARNING_STRING: &str =
+    "Restricted due to billing issue. Update your payment method to purchase usage.";
 const ADDON_CREDITS_NON_ADMIN_DELINQUENT_WARNING_STRING: &str =
     "Restricted due to billing issue. Contact your team admin to update their payment method.";
 const RESTRICTED_BILLING_USAGE_WARNING_STRING: &str = "Auto reload is disabled due to recent failed reload. Please update your payment method and try again.";
@@ -145,8 +150,17 @@ struct TabMouseStates {
 struct AddonCreditsState {
     selected_denomination: usize,
     options: Vec<AddonCreditsOption>,
+    /// The charge unit the denomination buttons were last built for.
+    charge_unit: ChargeUnit,
     denomination_buttons: Vec<ViewHandle<ActionButton>>,
     purchase_loading: bool,
+}
+
+fn buy_header(charge_unit: ChargeUnit) -> &'static str {
+    match charge_unit {
+        ChargeUnit::Credits => "Buy credits",
+        ChargeUnit::Cents => "Buy usage",
+    }
 }
 enum AddonCreditsPanelState {
     IneligiblePlan(AddonCreditsRestriction),
@@ -182,6 +196,7 @@ struct AddonCreditsPurchaseState {
     warning_text: Option<&'static str>,
     /// Surcharge in basis points applied to displayed prices (0 = none).
     premium_bps: i32,
+    charge_unit: ChargeUnit,
 }
 
 struct UsageHistoryState {
@@ -435,6 +450,7 @@ impl BillingAndUsagePageV2View {
             addon_credits: AddonCreditsState {
                 selected_denomination: 0,
                 options: Default::default(),
+                charge_unit: ChargeUnit::Credits,
                 denomination_buttons: Default::default(),
                 purchase_loading: false,
             },
@@ -452,20 +468,13 @@ impl BillingAndUsagePageV2View {
     }
 
     fn refresh_addon_credits_settings(&mut self, ctx: &mut ViewContext<Self>) {
-        let Some(workspace) = UserWorkspaces::as_ref(ctx).current_workspace() else {
-            return;
-        };
-        let addon_credits_settings = &workspace.settings.addon_credits_settings;
-        if addon_credits_settings.auto_reload_enabled {
-            self.addon_credits.selected_denomination = addon_credits_settings
-                .selected_auto_reload_credit_denomination
-                .and_then(|amount| {
-                    self.addon_credits
-                        .options
-                        .iter()
-                        .find_position(|option| option.credits == amount)
-                })
-                .map_or(0, |pair| pair.0);
+        if let Some(workspace) = UserWorkspaces::as_ref(ctx).current_workspace() {
+            let addon_credits_settings = &workspace.settings.addon_credits_settings;
+            if addon_credits_settings.auto_reload_enabled {
+                self.addon_credits.selected_denomination = addon_credits_settings
+                    .selected_auto_reload_option_index(&self.addon_credits.options)
+                    .unwrap_or(0);
+            }
         }
         self.update_denomination_buttons_focus(ctx);
     }
@@ -490,6 +499,7 @@ impl BillingAndUsagePageV2View {
         match event {
             UserWorkspacesEvent::TeamsChanged => {
                 self.update_addon_credit_modal(ctx);
+                self.update_addon_credits_options(ctx);
             }
             UserWorkspacesEvent::UpdateWorkspaceSettingsSuccess => {
                 self.update_addon_credit_modal(ctx);
@@ -512,11 +522,11 @@ impl BillingAndUsagePageV2View {
             }
             UserWorkspacesEvent::PurchaseAddonCreditsSuccess => {
                 self.addon_credits.purchase_loading = false;
-                self.show_toast(
-                    "Successfully purchased add-on credits",
-                    ToastFlavor::Success,
-                    ctx,
-                );
+                let message = match UserWorkspaces::as_ref(ctx).charge_unit() {
+                    ChargeUnit::Credits => "Successfully purchased add-on credits",
+                    ChargeUnit::Cents => "Successfully purchased usage",
+                };
+                self.show_toast(message, ToastFlavor::Success, ctx);
                 AIRequestUsageModel::handle(ctx)
                     .update(ctx, |m, ctx| m.refresh_request_usage_async(ctx));
             }
@@ -630,27 +640,48 @@ impl BillingAndUsagePageV2View {
     }
 
     fn update_addon_credits_options(&mut self, ctx: &mut ViewContext<Self>) {
-        self.addon_credits.options = PricingInfoModel::as_ref(ctx)
+        let options = PricingInfoModel::as_ref(ctx)
             .addon_credits_options()
             .map(|options| options.to_vec())
             .unwrap_or_default();
-        self.addon_credits.denomination_buttons = self
+        let charge_unit = UserWorkspaces::as_ref(ctx).charge_unit();
+        // Every workspace-metadata poll republishes the (usually unchanged) catalog; rebuilding
+        // the buttons would discard their selection and hover state for nothing.
+        if options == self.addon_credits.options
+            && charge_unit == self.addon_credits.charge_unit
+            && !self.addon_credits.denomination_buttons.is_empty()
+        {
+            return;
+        }
+        self.addon_credits.selected_denomination = self
             .addon_credits
-            .options
-            .iter()
-            .enumerate()
-            .map(|(i, option)| {
-                ctx.add_typed_action_view(move |_ctx| {
-                    ActionButton::new(option.credits.separate_with_commas(), SecondaryTheme)
-                        .with_icon(Icon::Credits)
-                        .on_click(move |ctx| {
-                            ctx.dispatch_typed_action(
-                                BillingAndUsagePageAction::SelectTopupDenomination(i),
-                            );
-                        })
+            .selected_denomination
+            .min(options.len().saturating_sub(1));
+        self.addon_credits.options = options;
+        self.addon_credits.charge_unit = charge_unit;
+        self.addon_credits.denomination_buttons =
+            self.addon_credits
+                .options
+                .iter()
+                .enumerate()
+                .map(|(i, option)| {
+                    let amount = PackAmount::of(option, charge_unit);
+                    ctx.add_typed_action_view(move |_ctx| {
+                        let button = ActionButton::new(amount.short_label(), SecondaryTheme)
+                            .on_click(move |ctx| {
+                                ctx.dispatch_typed_action(
+                                    BillingAndUsagePageAction::SelectTopupDenomination(i),
+                                );
+                            });
+                        if amount.is_usage() {
+                            button
+                        } else {
+                            button.with_icon(Icon::Credits)
+                        }
+                    })
                 })
-            })
-            .collect();
+                .collect();
+        self.update_denomination_buttons_focus(ctx);
     }
 
     // ── Rendering ────────────────────────────────────────────────────────
@@ -1148,9 +1179,12 @@ impl BillingAndUsagePageV2View {
             delinquent,
             app,
         ) {
-            AddonCreditsPanelState::IneligiblePlan(restriction) => {
-                self.render_addon_credits_ineligible_plan_card(restriction, appearance)
-            }
+            AddonCreditsPanelState::IneligiblePlan(restriction) => self
+                .render_addon_credits_ineligible_plan_card(
+                    restriction,
+                    UserWorkspaces::as_ref(app).charge_unit(),
+                    appearance,
+                ),
             AddonCreditsPanelState::AutoreloadNonAdmin {
                 description_text,
                 warning_text,
@@ -1213,14 +1247,25 @@ impl BillingAndUsagePageV2View {
                 .auto_reload_enabled
         });
 
+        let charge_unit = UserWorkspaces::as_ref(app).charge_unit();
         let team_count = workspaces
             .team_for_view_handle(&self.self_handle, app)
             .map(|team| team.members.len())
             .unwrap_or(1);
+        let (description, team_description) = match charge_unit {
+            ChargeUnit::Credits => (
+                ADDON_CREDITS_DESCRIPTION,
+                ADDITIONAL_ADDON_CREDITS_DESCRIPTION_FOR_TEAM,
+            ),
+            ChargeUnit::Cents => (
+                ADDON_USAGE_DESCRIPTION,
+                ADDITIONAL_ADDON_USAGE_DESCRIPTION_FOR_TEAM,
+            ),
+        };
         let description_text = if team_count > 1 {
-            format!("{ADDON_CREDITS_DESCRIPTION} {ADDITIONAL_ADDON_CREDITS_DESCRIPTION_FOR_TEAM}")
+            format!("{description} {team_description}")
         } else {
-            ADDON_CREDITS_DESCRIPTION.to_string()
+            description.to_string()
         };
 
         let would_exceed = workspace
@@ -1244,23 +1289,31 @@ impl BillingAndUsagePageV2View {
             || (!auto_reload_enabled && selected_credit_option.is_none());
         let price_label = selected_credit_option
             .map(|opt| {
-                let credits = opt.credits.separate_with_commas();
                 let dollars = format!(
                     "${:.2}",
                     opt.price_usd_cents_with_premium(premium_bps) as f64 / 100.0
                 );
-                format!("{credits} credits / {dollars}")
+                format!("{} / {dollars}", PackAmount::of(opt, charge_unit).label())
             })
             .unwrap_or_default();
         let auto_reload_credit_amount = selected_credit_option
-            .map(|o| format!("{} credits", o.credits.separate_with_commas()))
+            .map(|o| PackAmount::of(o, charge_unit).label())
             .unwrap_or_else(|| "selected credit amount".to_string());
-        let auto_reload_tooltip_text = format!(
-            "When any member on your team’s credit balance reaches 100 credits remaining, \
-            automatically purchase {auto_reload_credit_amount}."
-        );
+        let auto_reload_tooltip_text = match charge_unit {
+            ChargeUnit::Credits => format!(
+                "When any member on your team’s credit balance reaches 100 credits remaining, \
+                automatically purchase {auto_reload_credit_amount}."
+            ),
+            ChargeUnit::Cents => format!(
+                "When any member on your team’s purchased usage runs low, automatically purchase \
+                {auto_reload_credit_amount}."
+            ),
+        };
         let warning_text = if delinquent && has_admin_permissions {
-            Some(ADDON_CREDITS_DELINQUENT_WARNING_STRING)
+            Some(match charge_unit {
+                ChargeUnit::Credits => ADDON_CREDITS_DELINQUENT_WARNING_STRING,
+                ChargeUnit::Cents => ADDON_USAGE_DELINQUENT_WARNING_STRING,
+            })
         } else if delinquent {
             Some(ADDON_CREDITS_NON_ADMIN_DELINQUENT_WARNING_STRING)
         } else if workspace.is_some_and(|workspace| {
@@ -1298,28 +1351,35 @@ impl BillingAndUsagePageV2View {
                     workspace
                         .settings
                         .addon_credits_settings
-                        .selected_auto_reload_credit_denomination
-                })
-                .and_then(|credits| {
-                    self.addon_credits
-                        .options
-                        .iter()
-                        .find(|option| option.credits == credits)
+                        .selected_auto_reload_option(&self.addon_credits.options)
                 })
                 .or(selected_credit_option);
-            let description_text = match configured_auto_reload_option {
-                Some(option) => {
-                    let credits = option.credits.separate_with_commas();
+            let description_text = match (charge_unit, configured_auto_reload_option) {
+                (ChargeUnit::Credits, Some(option)) => {
+                    let amount = PackAmount::of(option, charge_unit).label();
                     let price = format!(
                         "${:.2}",
                         option.price_usd_cents_with_premium(premium_bps) as f64 / 100.0
                     );
                     format!(
-                        "Your admin has enabled auto-reload for add-on credits. When your team's add-on credit balance runs low, Warp will automatically purchase {credits} credits for {price} and add them to your team's shared pool."
+                        "Your admin has enabled auto-reload for add-on credits. When your team's add-on credit balance runs low, Warp will automatically purchase {amount} for {price} and add them to your team's shared pool."
                     )
                 }
-                None => {
+                (ChargeUnit::Credits, None) => {
                     "Your admin has enabled auto-reload for add-on credits. When your team's add-on credit balance runs low, Warp will automatically purchase add-on credits and add them to your team's shared pool.".to_string()
+                }
+                (ChargeUnit::Cents, Some(option)) => {
+                    let amount = PackAmount::of(option, charge_unit).label();
+                    let price = format!(
+                        "${:.2}",
+                        option.price_usd_cents_with_premium(premium_bps) as f64 / 100.0
+                    );
+                    format!(
+                        "Your admin has enabled auto-reload. When your team's purchased usage runs low, Warp will automatically purchase {amount} for {price} and add it to your team's shared pool."
+                    )
+                }
+                (ChargeUnit::Cents, None) => {
+                    "Your admin has enabled auto-reload. When your team's purchased usage runs low, Warp will automatically purchase more and add it to your team's shared pool.".to_string()
                 }
             };
             return AddonCreditsPanelState::AutoreloadNonAdmin {
@@ -1339,22 +1399,37 @@ impl BillingAndUsagePageV2View {
             auto_reload_tooltip_text,
             warning_text,
             premium_bps,
+            charge_unit,
         })
     }
 
     fn render_addon_credits_ineligible_plan_card(
         &self,
         restriction: AddonCreditsRestriction,
+        charge_unit: ChargeUnit,
         appearance: &Appearance,
     ) -> Box<dyn Element> {
         let theme = appearance.theme();
         let bg = theme.background();
+        let (upgrade_suffix, contact_account_executive_text, contact_team_admin_text) =
+            match charge_unit {
+                ChargeUnit::Credits => (
+                    " to purchase add-on credits.",
+                    "Contact your Account Executive for more add-on credits.",
+                    "Contact a team admin to enable add-on credits.",
+                ),
+                ChargeUnit::Cents => (
+                    " to purchase usage.",
+                    "Contact your Account Executive for more usage.",
+                    "Contact a team admin to enable usage purchases.",
+                ),
+            };
         let explanation = match restriction {
             AddonCreditsRestriction::UpgradeToBuild { link_text, url } => {
                 FormattedTextElement::new(
                     FormattedText::new([FormattedTextLine::Line(vec![
                         FormattedTextFragment::hyperlink(link_text, url),
-                        FormattedTextFragment::plain_text(" to purchase add-on credits."),
+                        FormattedTextFragment::plain_text(upgrade_suffix),
                     ])]),
                     appearance.ui_font_size(),
                     appearance.ui_font_family(),
@@ -1379,7 +1454,7 @@ impl BillingAndUsagePageV2View {
             }
             AddonCreditsRestriction::ContactAccountExecutive => appearance
                 .ui_builder()
-                .paragraph("Contact your Account Executive for more add-on credits.")
+                .paragraph(contact_account_executive_text)
                 .with_style(UiComponentStyles {
                     font_color: Some(theme.sub_text_color(bg).into()),
                     ..Default::default()
@@ -1388,7 +1463,7 @@ impl BillingAndUsagePageV2View {
                 .finish(),
             AddonCreditsRestriction::ContactTeamAdmin => appearance
                 .ui_builder()
-                .paragraph("Contact a team admin to enable add-on credits.")
+                .paragraph(contact_team_admin_text)
                 .with_style(UiComponentStyles {
                     font_color: Some(theme.sub_text_color(bg).into()),
                     ..Default::default()
@@ -1396,10 +1471,14 @@ impl BillingAndUsagePageV2View {
                 .build()
                 .finish(),
         };
-        let header = Text::new_inline("Buy credits", appearance.ui_font_family(), HEADER_FONT_SIZE)
-            .with_color(theme.foreground().into())
-            .with_style(Properties::default().weight(Weight::Medium))
-            .finish();
+        let header = Text::new_inline(
+            buy_header(charge_unit),
+            appearance.ui_font_family(),
+            HEADER_FONT_SIZE,
+        )
+        .with_color(theme.foreground().into())
+        .with_style(Properties::default().weight(Weight::Medium))
+        .finish();
         let card = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_children([
@@ -1489,10 +1568,15 @@ impl BillingAndUsagePageV2View {
         let theme = appearance.theme();
         let bg = theme.background();
         let ui_builder = appearance.ui_builder();
-        let header = Text::new_inline("Buy credits", appearance.ui_font_family(), HEADER_FONT_SIZE)
-            .with_color(theme.foreground().into())
-            .with_style(Properties::default().weight(Weight::Medium))
-            .finish();
+        let charge_unit = state.charge_unit;
+        let header = Text::new_inline(
+            buy_header(charge_unit),
+            appearance.ui_font_family(),
+            HEADER_FONT_SIZE,
+        )
+        .with_color(theme.foreground().into())
+        .with_style(Properties::default().weight(Weight::Medium))
+        .finish();
         let paragraph = ui_builder
             .paragraph(state.description_text.clone())
             .with_style(UiComponentStyles {
@@ -1513,7 +1597,11 @@ impl BillingAndUsagePageV2View {
                     on_click_action: None,
                     secondary_text: None,
                     tooltip_override_text: Some(
-                        "Sets the monthly limit spent on add-on credits".to_string(),
+                        match charge_unit {
+                            ChargeUnit::Credits => "Sets the monthly limit spent on add-on credits",
+                            ChargeUnit::Cents => "Sets the monthly limit spent on purchased usage",
+                        }
+                        .to_string(),
                     ),
                 },
             );
@@ -1547,9 +1635,9 @@ impl BillingAndUsagePageV2View {
                 .finish();
             upper_section.add_child(spend_row);
 
-            if let Some(purchased_row) = workspace
-                .and_then(|workspace| Self::render_purchased_this_month_row(workspace, appearance))
-            {
+            if let Some(purchased_row) = workspace.and_then(|workspace| {
+                Self::render_purchased_this_month_row(workspace, charge_unit, appearance)
+            }) {
                 upper_section.add_child(purchased_row);
             }
         }
@@ -1581,6 +1669,7 @@ impl BillingAndUsagePageV2View {
 
     fn render_purchased_this_month_row(
         workspace: &Workspace,
+        charge_unit: ChargeUnit,
         appearance: &Appearance,
     ) -> Option<Box<dyn Element>> {
         let bonus_grants = &workspace.bonus_grants_purchased_this_month;
@@ -1596,39 +1685,39 @@ impl BillingAndUsagePageV2View {
             .with_color(theme.active_ui_text_color().into())
             .finish();
 
-        let credits_text = if credits_purchased == 1 {
-            "1 credit".to_string()
-        } else {
-            format!("{} credits", credits_purchased.separate_with_commas())
-        };
-
-        let credits_component = Container::new(
-            Text::new_inline(credits_text, appearance.ui_font_family(), 12.)
-                .with_color(blended_colors::text_disabled(theme, theme.surface_1()))
+        let mut amounts = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+        // Packs sold in dollars are bought as usage, so the credit count they carry is not a
+        // figure the user was shown when buying them.
+        if charge_unit == ChargeUnit::Credits {
+            amounts.add_child(
+                Container::new(
+                    Text::new_inline(
+                        PackAmount::Credits(credits_purchased).label(),
+                        appearance.ui_font_family(),
+                        12.,
+                    )
+                    .with_color(blended_colors::text_disabled(theme, theme.surface_1()))
+                    .finish(),
+                )
+                .with_margin_right(8.)
                 .finish(),
-        )
-        .with_margin_right(8.)
-        .finish();
-
-        let cost_component = Text::new_inline(
-            format!("${cost_dollars:.2}"),
-            appearance.ui_font_family(),
-            12.,
-        )
-        .with_color(blended_colors::text_sub(theme, theme.surface_1()))
-        .finish();
+            );
+        }
+        amounts.add_child(
+            Text::new_inline(
+                format!("${cost_dollars:.2}"),
+                appearance.ui_font_family(),
+                12.,
+            )
+            .with_color(blended_colors::text_sub(theme, theme.surface_1()))
+            .finish(),
+        );
 
         Some(
             Container::new(
                 Flex::row()
                     .with_child(label)
-                    .with_child(
-                        Flex::row()
-                            .with_child(credits_component)
-                            .with_child(cost_component)
-                            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                            .finish(),
-                    )
+                    .with_child(amounts.finish())
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
                     .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
                     .with_main_axis_size(MainAxisSize::Max)
@@ -1768,6 +1857,7 @@ impl BillingAndUsagePageV2View {
             lower_children.push(render_premium_upgrade_savings_note(
                 upgrade_url,
                 state.premium_bps,
+                state.charge_unit,
                 appearance,
             ));
         }
@@ -2277,11 +2367,15 @@ impl TypedActionView for BillingAndUsagePageV2View {
                     ctx
                 );
                 self.pending_auto_reload_toast = Some(if *enabled {
-                    let credits = auto_reload_denomination_credits
-                        .map(|c| c.separate_with_commas())
-                        .unwrap_or_else(|| "your selected".to_string());
+                    let charge_unit = UserWorkspaces::as_ref(ctx).charge_unit();
+                    let amount = self
+                        .addon_credits
+                        .options
+                        .get(self.addon_credits.selected_denomination)
+                        .map(|option| PackAmount::of(option, charge_unit).label())
+                        .unwrap_or_else(|| "your selected package".to_string());
                     format!(
-                        "Auto-reload enabled. We'll refill with {credits} credits when your balance runs low."
+                        "Auto-reload enabled. We'll refill with {amount} when your balance runs low."
                     )
                 } else {
                     "Auto-reload disabled.".to_string()
