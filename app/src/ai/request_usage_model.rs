@@ -677,6 +677,24 @@ impl AIRequestUsageModel {
         self.request_limit_info.is_unlimited
     }
 
+    /// The dollar value of the included allowance, in cents, when the server supplied one.
+    pub fn included_usage_cents(&self) -> Option<f64> {
+        self.request_limit_info.included_usage_cents
+    }
+
+    /// The dollar value of the included allowance used since the last refresh, in cents, when
+    /// the server supplied one. Reads as zero once the refresh time has passed, mirroring
+    /// [`Self::requests_used`].
+    pub fn usage_cents_used(&self) -> Option<f64> {
+        let used = self
+            .request_limit_info
+            .usage_cents_used_since_last_refresh?;
+        if self.next_refresh_time() <= Utc::now() {
+            return Some(0.);
+        }
+        Some(used)
+    }
+
     pub fn refresh_duration_to_string(&self) -> String {
         match self.request_limit_info.request_limit_refresh_duration {
             RequestLimitRefreshDuration::Weekly => "weekly".to_string(),
@@ -689,24 +707,26 @@ impl AIRequestUsageModel {
         &self.bonus_grants
     }
 
+    fn ambient_only_grants(&self) -> impl Iterator<Item = &BonusGrant> {
+        self.bonus_grants
+            .iter()
+            .filter(|g| g.grant_type == BonusGrantType::AmbientOnly)
+    }
+
     /// Returns the total remaining ambient-only credits for the user.
     /// Returns None if the user has never received any ambient-only grants.
     pub fn ambient_only_credits_remaining(&self) -> Option<i32> {
-        let ambient_grants: Vec<_> = self
-            .bonus_grants
-            .iter()
-            .filter(|g| g.grant_type == BonusGrantType::AmbientOnly)
-            .collect();
-        if ambient_grants.is_empty() {
-            None
-        } else {
-            Some(
-                ambient_grants
-                    .iter()
-                    .map(|g| g.request_credits_remaining)
-                    .sum(),
-            )
-        }
+        let mut ambient_grants = self.ambient_only_grants().peekable();
+        ambient_grants.peek()?;
+        Some(ambient_grants.map(|g| g.request_credits_remaining).sum())
+    }
+
+    /// The dollar value of [`Self::ambient_only_credits_remaining`], in cents. `None` unless
+    /// every ambient-only grant carries a dollar value.
+    pub fn ambient_only_usage_cents_remaining(&self) -> Option<f64> {
+        let mut ambient_grants = self.ambient_only_grants().peekable();
+        ambient_grants.peek()?;
+        ambient_grants.map(|g| g.usage_cents_remaining).sum()
     }
 
     pub fn is_ambient_credits_banner_dismissed(&self) -> bool {
@@ -722,13 +742,31 @@ impl AIRequestUsageModel {
         ctx.emit(AIRequestUsageModelEvent::AmbientCreditsBannerDismissed);
     }
 
-    pub fn total_workspace_and_team_bonus_credits_remaining(&self, uid: WorkspaceUid) -> i32 {
+    fn workspace_and_team_bonus_grants(
+        &self,
+        uid: WorkspaceUid,
+    ) -> impl Iterator<Item = &BonusGrant> {
         let now = Utc::now();
         self.bonus_grants
             .iter()
-            .filter(|grant| grant.scope.workspace_uid() == Some(uid))
-            .filter(|grant| grant.expiration.is_none_or(|exp| now < exp))
+            .filter(move |grant| grant.scope.workspace_uid() == Some(uid))
+            .filter(move |grant| grant.expiration.is_none_or(|exp| now < exp))
+    }
+
+    pub fn total_workspace_and_team_bonus_credits_remaining(&self, uid: WorkspaceUid) -> i32 {
+        self.workspace_and_team_bonus_grants(uid)
             .map(|grant| grant.request_credits_remaining)
+            .sum()
+    }
+
+    /// The dollar value of [`Self::total_workspace_and_team_bonus_credits_remaining`], in cents.
+    /// `None` unless every counted grant carries a dollar value.
+    pub fn total_workspace_and_team_bonus_usage_cents_remaining(
+        &self,
+        uid: WorkspaceUid,
+    ) -> Option<f64> {
+        self.workspace_and_team_bonus_grants(uid)
+            .map(|grant| grant.usage_cents_remaining)
             .sum()
     }
 
@@ -742,14 +780,26 @@ impl AIRequestUsageModel {
             .unwrap_or(0)
     }
 
-    pub fn total_user_interactive_bonus_credits_remaining(&self) -> i32 {
+    fn user_interactive_bonus_grants(&self) -> impl Iterator<Item = &BonusGrant> {
         let now = Utc::now();
         self.bonus_grants
             .iter()
             .filter(|grant| grant.scope == BonusGrantScope::User)
             .filter(|grant| grant.grant_type != BonusGrantType::AmbientOnly)
-            .filter(|grant| grant.expiration.is_none_or(|exp| now < exp))
+            .filter(move |grant| grant.expiration.is_none_or(|exp| now < exp))
+    }
+
+    pub fn total_user_interactive_bonus_credits_remaining(&self) -> i32 {
+        self.user_interactive_bonus_grants()
             .map(|grant| grant.request_credits_remaining)
+            .sum()
+    }
+
+    /// The dollar value of [`Self::total_user_interactive_bonus_credits_remaining`], in cents.
+    /// `None` unless every counted grant carries a dollar value.
+    pub fn total_user_interactive_bonus_usage_cents_remaining(&self) -> Option<f64> {
+        self.user_interactive_bonus_grants()
+            .map(|grant| grant.usage_cents_remaining)
             .sum()
     }
 

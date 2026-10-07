@@ -44,6 +44,7 @@ use super::settings_page::{
     render_info_icon,
 };
 use crate::ai::AIRequestUsageModel;
+use crate::ai::blocklist::view_util::format_dollars;
 use crate::auth::auth_manager::LoginGatedFeature;
 use crate::auth::auth_state::AuthState;
 use crate::auth::auth_view_modal::AuthViewVariant;
@@ -65,7 +66,9 @@ use crate::view_components::action_button::{ActionButton, PrimaryTheme, Secondar
 use crate::workspaces::update_manager::TeamUpdateManager;
 use crate::workspaces::user_profiles::UserProfiles;
 use crate::workspaces::user_workspaces::{UserWorkspaces, UserWorkspacesEvent};
-use crate::workspaces::workspace::{BillingMetadata, CustomerType, Workspace};
+use crate::workspaces::workspace::{
+    BillingMetadata, ChargeUnit, CustomerType, Workspace, WorkspaceMemberUsageInfo,
+};
 use crate::{WorkspaceAction, send_telemetry_from_ctx};
 
 const HEADER_FONT_SIZE: f32 = 16.;
@@ -1160,6 +1163,91 @@ enum Divisor {
     Limit(usize),
 }
 
+/// The dollar values of a usage row's credit figures, for a plan charged in cents.
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct UsageCents {
+    used: f64,
+    /// `None` when the server left out the limit's dollar value and for rows without a limit of
+    /// their own.
+    limit: Option<f64>,
+}
+
+/// The current user's allowance figures in cents: for a plan charged in cents, when the server
+/// supplied the used figure. Unlimited subjects keep the credit display.
+fn allowance_usage_cents(
+    charge_unit: ChargeUnit,
+    ai_request_usage_model: &AIRequestUsageModel,
+) -> Option<UsageCents> {
+    match charge_unit {
+        ChargeUnit::Credits => None,
+        ChargeUnit::Cents if ai_request_usage_model.is_unlimited() => None,
+        ChargeUnit::Cents => Some(UsageCents {
+            used: ai_request_usage_model.usage_cents_used()?,
+            limit: ai_request_usage_model.included_usage_cents(),
+        }),
+    }
+}
+
+/// A member's allowance figures in cents: for a plan charged in cents, when the server supplied
+/// the used figure. Unlimited members keep the credit display.
+fn member_usage_cents(
+    charge_unit: ChargeUnit,
+    usage_info: &WorkspaceMemberUsageInfo,
+) -> Option<UsageCents> {
+    match charge_unit {
+        ChargeUnit::Credits => None,
+        ChargeUnit::Cents if usage_info.is_unlimited => None,
+        ChargeUnit::Cents => Some(UsageCents {
+            used: usage_info.usage_cents_used_since_last_refresh?.into_inner(),
+            limit: usage_info
+                .included_usage_cents
+                .map(|cents| cents.into_inner()),
+        }),
+    }
+}
+
+/// Whether a usage row shows dollars: only when every figure it displays has a dollar value, so
+/// a row never mixes units.
+fn shows_dollars(divisor: Option<Divisor>, usage_cents: Option<UsageCents>) -> bool {
+    match divisor {
+        Some(Divisor::Limit(_)) => usage_cents.is_some_and(|cents| cents.limit.is_some()),
+        Some(Divisor::Unlimited) | None => usage_cents.is_some(),
+    }
+}
+
+/// Formats a usage row's `used/limit` figure, in dollars when [`shows_dollars`] and otherwise in
+/// credits.
+fn format_usage_count(
+    used: usize,
+    divisor: Option<Divisor>,
+    usage_cents: Option<UsageCents>,
+) -> String {
+    match (divisor, usage_cents) {
+        (
+            Some(Divisor::Limit(_)),
+            Some(UsageCents {
+                used: used_cents,
+                limit: Some(limit_cents),
+            }),
+        ) => format!(
+            "{}/{}",
+            format_dollars(used_cents as f32),
+            format_dollars(limit_cents as f32)
+        ),
+        (Some(Divisor::Limit(limit)), Some(UsageCents { limit: None, .. }) | None) => format!(
+            "{}/{}",
+            used.separate_with_commas(),
+            limit.separate_with_commas()
+        ),
+        (Some(Divisor::Unlimited), Some(cents)) => {
+            format!("{}/Unlimited", format_dollars(cents.used as f32))
+        }
+        (Some(Divisor::Unlimited), None) => format!("{}/Unlimited", used.separate_with_commas()),
+        (None, Some(cents)) => format_dollars(cents.used as f32),
+        (None, None) => used.separate_with_commas(),
+    }
+}
+
 impl BillingAndUsagePageView {
     /// Renders the ambient agent trial widget showing remaining credits and action buttons.
     /// Returns None if the user has no ambient-only credits (None value from server),
@@ -1188,13 +1276,18 @@ impl BillingAndUsagePageView {
             .with_style(Properties::default().weight(Weight::Semibold))
             .finish();
 
-        let credits_text = if credits_remaining == 1 {
-            "1 credit remaining".to_string()
-        } else {
-            format!(
+        let workspaces = UserWorkspaces::as_ref(app);
+        let usage_cents_remaining = match workspaces.charge_unit() {
+            ChargeUnit::Cents => ai_request_usage_model.ambient_only_usage_cents_remaining(),
+            ChargeUnit::Credits => None,
+        };
+        let credits_text = match usage_cents_remaining {
+            Some(cents) => format!("{} remaining", format_dollars(cents as f32)),
+            None if credits_remaining == 1 => "1 credit remaining".to_string(),
+            None => format!(
                 "{} credits remaining",
                 credits_remaining.separate_with_commas()
-            )
+            ),
         };
         let credits_label = Text::new_inline(credits_text, appearance.ui_font_family(), 12.)
             .with_color(blended_colors::text_sub(theme, theme.surface_1()))
@@ -1242,7 +1335,7 @@ impl BillingAndUsagePageView {
         }
 
         // Only show "Buy more" button for users not on a paid plan.
-        let is_on_paid_plan = UserWorkspaces::as_ref(app)
+        let is_on_paid_plan = workspaces
             .current_workspace_billing_metadata()
             .is_some_and(BillingMetadata::is_user_on_paid_plan);
         if !is_on_paid_plan {
@@ -1676,6 +1769,7 @@ impl BillingAndUsagePageView {
         team_uid: Option<ServerId>,
         has_admin_permissions: bool,
         bonus_credit_balance: i32,
+        bonus_usage_cents_balance: Option<f64>,
         addon_credits_options: &[AddonCreditsOption],
         addon_credit_denomination_buttons: &[ViewHandle<ActionButton>],
         purchase_addon_credits_loading: bool,
@@ -1693,13 +1787,13 @@ impl BillingAndUsagePageView {
             .with_style(Properties::default().weight(Weight::Bold))
             .finish();
 
-        let credits_value = Text::new_inline(
-            bonus_credit_balance.separate_with_commas(),
-            appearance.ui_font_family(),
-            16.,
-        )
-        .with_color(fg.into())
-        .finish();
+        let balance_label = match bonus_usage_cents_balance {
+            Some(cents) => format_dollars(cents as f32),
+            None => bonus_credit_balance.separate_with_commas(),
+        };
+        let credits_value = Text::new_inline(balance_label, appearance.ui_font_family(), 16.)
+            .with_color(fg.into())
+            .finish();
 
         let icon = Container::new(
             ConstrainedBox::new(Icon::Credits.to_warpui_icon(fg).finish())
@@ -2349,6 +2443,7 @@ impl BillingAndUsagePageView {
         &self,
         used: usize,
         divisor: Option<Divisor>,
+        usage_cents: Option<UsageCents>,
         workspace_is_delinquent_due_to_payment_issue: bool,
         appearance: &Appearance,
         prorated_request_limits_info: Option<ProratedRequestLimitsInfo>,
@@ -2391,17 +2486,7 @@ impl BillingAndUsagePageView {
         let request_count_label = if workspace_is_delinquent_due_to_payment_issue {
             "Restricted due to billing issue".to_string()
         } else {
-            match divisor {
-                Some(Divisor::Unlimited) => {
-                    format!("{}/Unlimited", used.separate_with_commas())
-                }
-                Some(Divisor::Limit(limit)) => format!(
-                    "{}/{}",
-                    used.separate_with_commas(),
-                    limit.separate_with_commas()
-                ),
-                None => used.separate_with_commas(),
-            }
+            format_usage_count(used, divisor, usage_cents)
         };
 
         row.add_child(
@@ -2442,6 +2527,7 @@ impl BillingAndUsagePageView {
         name: String,
         used: usize,
         divisor: Option<Divisor>,
+        usage_cents: Option<UsageCents>,
         refresh_duration: String,
         workspace_is_delinquent_due_to_payment_issue: bool,
         appearance: &Appearance,
@@ -2452,6 +2538,7 @@ impl BillingAndUsagePageView {
             .with_child(self.render_request_usage_count(
                 used,
                 divisor,
+                usage_cents,
                 workspace_is_delinquent_due_to_payment_issue,
                 appearance,
                 prorated_request_limits_info,
@@ -2476,9 +2563,13 @@ impl BillingAndUsagePageView {
             )
             .finish()
         } else {
-            let header = "Credits";
+            let (header, unit) = if shows_dollars(divisor, usage_cents) {
+                ("Usage", "usage")
+            } else {
+                ("Credits", "credits")
+            };
             let description =
-                format!("This is the {refresh_duration} limit of AI credits for your account.");
+                format!("This is the {refresh_duration} limit of AI {unit} for your account.");
 
             let request_usage_description = FormattedTextElement::from_str(
                 description,
@@ -2885,6 +2976,7 @@ impl BillingAndUsagePageView {
         let billing_metadata = workspaces.current_workspace_billing_metadata();
         let has_admin_permissions =
             team.is_some_and(|team| team.has_admin_permissions(&current_user_email));
+        let charge_unit = workspaces.charge_unit();
 
         let mut usage_header_right_side = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -2989,6 +3081,16 @@ impl BillingAndUsagePageView {
                         .total_workspace_and_team_bonus_credits_remaining(workspace.uid)
                 },
             );
+            let bonus_usage_cents_balance = match charge_unit {
+                ChargeUnit::Cents => workspace.map_or_else(
+                    || ai_request_usage_model.total_user_interactive_bonus_usage_cents_remaining(),
+                    |workspace| {
+                        ai_request_usage_model
+                            .total_workspace_and_team_bonus_usage_cents_remaining(workspace.uid)
+                    },
+                ),
+                ChargeUnit::Credits => None,
+            };
 
             // Hide addon credits panel for Enterprise PAYG users when they have 0 credits.
             let is_enterprise_payg_with_zero_credits = workspace.is_some_and(|workspace| {
@@ -3007,6 +3109,7 @@ impl BillingAndUsagePageView {
                     team.map(|team| team.uid),
                     can_manage_addon_credits,
                     bonus_credit_balance,
+                    bonus_usage_cents_balance,
                     &self.addon_credits_options,
                     &self.addon_credit_denomination_buttons,
                     self.purchase_addon_credits_loading,
@@ -3066,6 +3169,11 @@ impl BillingAndUsagePageView {
                 .iter()
                 .map(|m| m.usage_info.requests_used_since_last_refresh as usize)
                 .sum();
+            let team_total_usage_cents = workspace_team_members
+                .iter()
+                .map(|m| member_usage_cents(charge_unit, &m.usage_info).map(|cents| cents.used))
+                .sum::<Option<f64>>()
+                .map(|used| UsageCents { used, limit: None });
             let is_unlimited = ai_request_usage_model.is_unlimited();
 
             let team_divisor = if is_unlimited {
@@ -3078,6 +3186,7 @@ impl BillingAndUsagePageView {
                 "Team total".to_string(),
                 team_total_used,
                 team_divisor,
+                team_total_usage_cents,
                 ai_request_usage_model.refresh_duration_to_string(),
                 workspace_is_delinquent_due_to_payment_issue,
                 appearance,
@@ -3121,6 +3230,7 @@ impl BillingAndUsagePageView {
                         } else {
                             Some(Divisor::Limit(member.usage_info.request_limit as usize))
                         },
+                        member_usage_cents(charge_unit, &member.usage_info),
                         ai_request_usage_model.refresh_duration_to_string(),
                         workspace_is_delinquent_due_to_payment_issue,
                         appearance,
@@ -3154,6 +3264,7 @@ impl BillingAndUsagePageView {
                 } else {
                     Some(Divisor::Limit(ai_request_usage_model.request_limit()))
                 },
+                allowance_usage_cents(charge_unit, ai_request_usage_model),
                 ai_request_usage_model.refresh_duration_to_string(),
                 workspace_is_delinquent_due_to_payment_issue,
                 appearance,

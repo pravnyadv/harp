@@ -225,6 +225,52 @@ fn test_request_limit_info_round_trips_usage_cents() {
 }
 
 #[test]
+fn test_dollar_accessors_expose_the_server_supplied_cents() {
+    App::test((), |mut app| async move {
+        let request_usage_model = add_request_usage_model(&mut app);
+        request_usage_model.update(&mut app, |model, _ctx| {
+            model.request_limit_info = RequestLimitInfo {
+                included_usage_cents: Some(1800.0),
+                usage_cents_used_since_last_refresh: Some(70.2),
+                next_refresh_time: ServerTimestamp::new(Utc::now() + Duration::days(1)),
+                ..RequestLimitInfo::default()
+            };
+            assert_eq!(model.included_usage_cents(), Some(1800.0));
+            assert_eq!(model.usage_cents_used(), Some(70.2));
+        })
+    });
+}
+
+#[test]
+fn test_usage_cents_used_is_zero_past_refresh_time() {
+    App::test((), |mut app| async move {
+        let request_usage_model = add_request_usage_model(&mut app);
+        request_usage_model.update(&mut app, |model, _ctx| {
+            model.request_limit_info = RequestLimitInfo {
+                included_usage_cents: Some(1800.0),
+                usage_cents_used_since_last_refresh: Some(70.2),
+                next_refresh_time: ServerTimestamp::new(Utc::now() - Duration::seconds(1)),
+                ..RequestLimitInfo::default()
+            };
+            assert_eq!(model.usage_cents_used(), Some(0.));
+            assert_eq!(model.included_usage_cents(), Some(1800.0));
+        })
+    });
+}
+
+#[test]
+fn test_dollar_accessors_are_none_without_server_supplied_cents() {
+    App::test((), |mut app| async move {
+        let request_usage_model = add_request_usage_model(&mut app);
+        request_usage_model.update(&mut app, |model, _ctx| {
+            model.request_limit_info = RequestLimitInfo::new_for_test(200, 39);
+            assert_eq!(model.included_usage_cents(), None);
+            assert_eq!(model.usage_cents_used(), None);
+        })
+    });
+}
+
+#[test]
 fn test_request_limit_info_with_limit() {
     App::test((), |mut app| async move {
         let request_usage_model = add_request_usage_model(&mut app);
@@ -847,6 +893,115 @@ fn test_total_workspace_and_team_bonus_credits_counts_both_scopes() {
                 18
             );
             assert_eq!(model.total_user_interactive_bonus_credits_remaining(), 5);
+        });
+    });
+}
+
+#[test]
+fn test_bonus_usage_cents_remaining_sums_grants_with_dollar_values() {
+    App::test((), |mut app| async move {
+        let (uid, workspace) = create_test_workspace();
+        add_user_workspaces_with_workspace(&mut app, workspace);
+        let request_usage_model = add_request_usage_model(&mut app);
+
+        request_usage_model.update(&mut app, |model, _ctx| {
+            let make = |scope, grant_type, remaining, usage_cents_remaining| BonusGrant {
+                created_at: Utc::now(),
+                cost_cents: 0,
+                expiration: None,
+                grant_type,
+                reason: "test".to_string(),
+                user_facing_message: None,
+                request_credits_granted: remaining,
+                request_credits_remaining: remaining,
+                usage_cents_granted: usage_cents_remaining,
+                usage_cents_remaining,
+                scope,
+            };
+            // The sums report the server-supplied cents regardless of the billing unit; the
+            // tier decides whether a surface shows them.
+            model.request_limit_info = RequestLimitInfo::new_for_test(10, 0);
+            model.bonus_grants = vec![
+                make(BonusGrantScope::User, BonusGrantType::Any, 5, Some(9.0)),
+                make(
+                    BonusGrantScope::User,
+                    BonusGrantType::AmbientOnly,
+                    100,
+                    Some(180.0),
+                ),
+                make(
+                    BonusGrantScope::Team(uid),
+                    BonusGrantType::Any,
+                    7,
+                    Some(12.5),
+                ),
+                make(
+                    BonusGrantScope::Workspace(uid),
+                    BonusGrantType::Any,
+                    11,
+                    Some(19.75),
+                ),
+            ];
+
+            assert_eq!(
+                model.total_workspace_and_team_bonus_usage_cents_remaining(uid),
+                Some(32.25)
+            );
+            assert_eq!(
+                model.total_user_interactive_bonus_usage_cents_remaining(),
+                Some(9.0)
+            );
+            assert_eq!(model.ambient_only_usage_cents_remaining(), Some(180.0));
+
+            // A grant without a dollar value makes its total fall back to credits.
+            model.bonus_grants.push(make(
+                BonusGrantScope::Team(uid),
+                BonusGrantType::Any,
+                3,
+                None,
+            ));
+            model.bonus_grants.push(make(
+                BonusGrantScope::User,
+                BonusGrantType::AmbientOnly,
+                3,
+                None,
+            ));
+            assert_eq!(
+                model.total_workspace_and_team_bonus_usage_cents_remaining(uid),
+                None
+            );
+            assert_eq!(
+                model.total_workspace_and_team_bonus_credits_remaining(uid),
+                21
+            );
+            assert_eq!(model.ambient_only_usage_cents_remaining(), None);
+            assert_eq!(model.ambient_only_credits_remaining(), Some(103));
+        });
+    });
+}
+
+#[test]
+fn test_bonus_usage_cents_remaining_without_grants() {
+    App::test((), |mut app| async move {
+        let (uid, workspace) = create_test_workspace();
+        add_user_workspaces_with_workspace(&mut app, workspace);
+        let request_usage_model = add_request_usage_model(&mut app);
+
+        request_usage_model.update(&mut app, |model, _ctx| {
+            model.bonus_grants.clear();
+
+            // An empty pool is a known zero-dollar balance, while "no ambient grants" stays
+            // unknown like its credit counterpart.
+            assert_eq!(
+                model.total_workspace_and_team_bonus_usage_cents_remaining(uid),
+                Some(0.0)
+            );
+            assert_eq!(
+                model.total_user_interactive_bonus_usage_cents_remaining(),
+                Some(0.0)
+            );
+            assert_eq!(model.ambient_only_usage_cents_remaining(), None);
+            assert_eq!(model.ambient_only_credits_remaining(), None);
         });
     });
 }
