@@ -916,6 +916,9 @@ pub enum FeatureFlag {
     /// Enables state-mutating recovery for abnormal terminal lifecycle sequences.
     TerminalLifecycleRecovery,
 
+    /// Recovers native cloud agent commands that terminate their persistent shell.
+    CloudAgentShellRespawn,
+
     /// Shows a warning in the agent view when the active conversation's
     /// provider-side prompt cache has expired.
     PromptCacheExpiryWarning,
