@@ -561,7 +561,7 @@ pub(crate) enum SavePoint {
     Periodic,
     /// The closing save after graceful or forced harness termination.
     Final,
-    /// A save after session activity such as prompt submission or completed tool use.
+    /// A save after a completed, failed, or cancelled turn.
     PostTurn,
 }
 

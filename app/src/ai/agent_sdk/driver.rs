@@ -31,7 +31,7 @@ use warp_cli::share::ShareRequest;
 use warp_cli::skill::SkillSpec;
 use warp_core::features::FeatureFlag;
 use warp_core::{safe_debug, safe_error, safe_info, safe_warn};
-use warp_errors::{ErrorExt, register_error, report_error, report_if_error};
+use warp_errors::{ErrorExt, ReportErrorLogMode, register_error, report_error, report_if_error};
 use warp_graphql::ai::{AgentTaskState, PlatformErrorCode};
 use warp_managed_secrets::ManagedSecretValue;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
@@ -179,7 +179,7 @@ where
     }
 }
 
-const HARNESS_SAVE_INTERVAL: Duration = Duration::from_secs(30);
+const HARNESS_SAVE_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// Delay after the initial exit request before retrying with the harness's
 /// follow-up input (e.g. Claude's confirmation-dialog dismissal). Sent
 /// unconditionally, without waiting to see whether it's needed.
@@ -4390,7 +4390,7 @@ impl AgentDriver {
                         | CLIAgentSessionStatus::Failed { .. }
                         | CLIAgentSessionStatus::Blocked { .. }
                         | CLIAgentSessionStatus::Cancelled => {
-                            if me.harness.is_some() {
+                            if !matches!(status, CLIAgentSessionStatus::Blocked { .. }) {
                                 me.request_harness_save(ctx);
                             }
                             let idle_window = idle_window_for_cli_session_status(
@@ -4452,7 +4452,22 @@ impl AgentDriver {
                         return;
                     }
 
-                    me.request_harness_save(ctx);
+                    let Some(runner) = me.harness.clone() else {
+                        return;
+                    };
+                    let foreground = ctx.spawner();
+                    ctx.spawn(
+                        async move {
+                            report_if_error!(
+                                runner
+                                    .handle_session_update(&foreground)
+                                    .await
+                                    .context("Failed to handle harness session update"),
+                                ReportErrorLogMode::OncePerRun
+                            );
+                        },
+                        |_, _, _| {},
+                    );
                 }
                 CLIAgentSessionsModelEvent::Started { .. }
                 | CLIAgentSessionsModelEvent::InputSessionChanged { .. }
