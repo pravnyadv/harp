@@ -989,6 +989,11 @@ pub enum FeatureFlag {
     /// replace inline computer-use screenshot bytes with references to
     /// Warp-managed object storage.
     StoredScreenshots,
+
+    /// Lets cloud agent environment checkouts build repositories from bare git
+    /// mirrors kept in the persistent build cache instead of cloning each one
+    /// from the remote. Disabling it restores direct, network-only checkouts.
+    GitMirrorCache,
 }
 
 static FLAG_STATES: [AtomicBool; cardinality::<FeatureFlag>()] =
@@ -1068,6 +1073,7 @@ pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::WarpingModelName,
     FeatureFlag::LrcActivitySignal,
     FeatureFlag::StoredScreenshots,
+    FeatureFlag::GitMirrorCache,
     FeatureFlag::CloudAgentExecutionConfig,
 ];
 
