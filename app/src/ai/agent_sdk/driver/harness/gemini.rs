@@ -59,14 +59,15 @@ impl ThirdPartyHarness for GeminiHarness {
         system_prompt: Option<&str>,
         _resumption_prompt: Option<&str>,
         context: Option<&str>,
-        _workspace_root: &Path,
+        workspace_root: &Path,
         harness_working_dir: &Path,
         _task_id: Option<AmbientAgentTaskId>,
         server_api: Arc<ServerApi>,
         terminal_driver: ModelHandle<TerminalDriver>,
         _resume: Option<ResumePayload>,
         _resolved_env_vars: &HashMap<OsString, OsString>,
-        _skill_dirs: &[PathBuf],
+        skill_dirs: &[PathBuf],
+        has_deferred_repositories: bool,
         _resolved_secrets: &HashMap<String, ManagedSecretValue>,
         _resolved_mcp_servers: &HashMap<String, JSONMCPServer>,
         _third_party_harness_model_config: Option<&HarnessModelConfig>,
@@ -77,6 +78,16 @@ impl ThirdPartyHarness for GeminiHarness {
                 harness: self.cli_agent().command_prefix().to_owned(),
                 error,
             }
+        })?;
+        publish_skills_for_gemini(
+            workspace_root,
+            harness_working_dir,
+            skill_dirs,
+            has_deferred_repositories,
+        )
+        .map_err(|error| AgentDriverError::HarnessConfigSetupFailed {
+            harness: self.cli_agent().command_prefix().to_owned(),
+            error,
         })?;
 
         // Gemini does not support conversation resume yet. When it does, it will add its
@@ -96,6 +107,30 @@ impl ThirdPartyHarness for GeminiHarness {
             terminal_driver,
         )?))
     }
+}
+
+pub(super) fn publish_skills_for_gemini(
+    workspace_root: &Path,
+    harness_working_dir: &Path,
+    skill_dirs: &[PathBuf],
+    has_deferred_repositories: bool,
+) -> Result<()> {
+    if !has_deferred_repositories {
+        return Ok(());
+    }
+    let skill_root = harness_working_dir.join(".gemini").join("skills");
+    let published = super::skill_dirs_publish::publish_skills_for_harness(
+        &skill_root,
+        workspace_root,
+        warp_isolation_platform::detect().is_some(),
+        skill_dirs,
+        has_deferred_repositories,
+    )?;
+    super::skill_dirs_publish::exclude_published_skill_paths_from_git(
+        harness_working_dir,
+        &published,
+    );
+    Ok(())
 }
 
 /// Build the shell command that launches the Gemini TUI.

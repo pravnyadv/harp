@@ -64,7 +64,7 @@ use super::super::terminal::{CommandHandle, TerminalDriver};
 use super::super::{AgentDriver, AgentDriverError};
 use super::claude_code::prepare_claude_environment_config;
 use super::codex::{prepare_codex_environment_config, publish_skills_for_codex};
-use super::gemini::prepare_gemini_environment_config;
+use super::gemini::{prepare_gemini_environment_config, publish_skills_for_gemini};
 use super::harness_persistence::{HarnessPersistence, PersistenceOutcome};
 use super::{
     HarnessCleanupDisposition, HarnessKind, HarnessRunner, JSONMCPServer, ResumePayload, SavePoint,
@@ -116,6 +116,7 @@ impl AcpHarness {
         harness_working_dir: &Path,
         resolved_env_vars: &HashMap<OsString, OsString>,
         skill_dirs: &[PathBuf],
+        has_deferred_repositories: bool,
         resolved_secrets: &HashMap<String, ManagedSecretValue>,
         third_party_harness_model_config: Option<&HarnessModelConfig>,
     ) -> Result<()> {
@@ -125,6 +126,7 @@ impl AcpHarness {
                 harness_working_dir,
                 resolved_env_vars,
                 skill_dirs,
+                has_deferred_repositories,
             ),
             // MCP servers are handed to the agent in `session/new` rather than written into
             // `config.toml`, so they are not registered twice.
@@ -137,11 +139,21 @@ impl AcpHarness {
                     &HashMap::new(),
                     third_party_harness_model_config,
                 )?;
-                publish_skills_for_codex(workspace_root, harness_working_dir, skill_dirs);
-                Ok(())
+                publish_skills_for_codex(
+                    workspace_root,
+                    harness_working_dir,
+                    skill_dirs,
+                    has_deferred_repositories,
+                )
             }
             Harness::Gemini => {
-                prepare_gemini_environment_config(harness_working_dir, system_prompt)
+                prepare_gemini_environment_config(harness_working_dir, system_prompt)?;
+                publish_skills_for_gemini(
+                    workspace_root,
+                    harness_working_dir,
+                    skill_dirs,
+                    has_deferred_repositories,
+                )
             }
             Harness::Oz | Harness::OpenCode | Harness::Unknown => Ok(()),
         }
@@ -203,6 +215,7 @@ impl ThirdPartyHarness for AcpHarness {
         _resume: Option<ResumePayload>,
         resolved_env_vars: &HashMap<OsString, OsString>,
         skill_dirs: &[PathBuf],
+        has_deferred_repositories: bool,
         resolved_secrets: &HashMap<String, ManagedSecretValue>,
         resolved_mcp_servers: &HashMap<String, JSONMCPServer>,
         third_party_harness_model_config: Option<&HarnessModelConfig>,
@@ -213,6 +226,7 @@ impl ThirdPartyHarness for AcpHarness {
             harness_working_dir,
             resolved_env_vars,
             skill_dirs,
+            has_deferred_repositories,
             resolved_secrets,
             third_party_harness_model_config,
         )
