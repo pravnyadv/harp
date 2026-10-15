@@ -607,6 +607,12 @@ fn build_server_side_task(
     Ok((config, task))
 }
 
+fn factory_repository_contract(task_id: Option<AmbientAgentTaskId>) -> bool {
+    task_id.is_some()
+        && FeatureFlag::FactoryDeferredRepositories.is_enabled()
+        && std::env::var_os("WARP_FACTORY_ID").is_some_and(|id| !id.is_empty())
+}
+
 fn build_execution_task_and_options(
     args: &RunAgentArgs,
     config: ExecutionConfiguration,
@@ -670,7 +676,7 @@ fn build_execution_task_and_options(
     let options = AgentDriverOptions {
         working_dir,
         task_id: Some(task_id),
-        use_factory_repositories: false,
+        use_factory_repositories: factory_repository_contract(Some(task_id)),
         experimental: None,
         parent_run_id: config.parent_run_id.map(|id| id.into_inner()),
         should_share: FeatureFlag::AgentSharedSessions.is_enabled(),
@@ -682,7 +688,6 @@ fn build_execution_task_and_options(
         workspace: {
             let mut workspace = driver::environment::WorkspaceConfiguration::from_resolved(
                 repositories,
-                Vec::new(),
                 config.setup_commands,
             )?;
             workspace.factory_skill_dirs = Some(factory_skill_dirs);
@@ -1174,6 +1179,7 @@ impl AgentDriverRunner {
     async fn fetch_task_git_credentials(
         task_id_str: String,
         ai_client: Arc<dyn AIClient>,
+        use_factory_repositories: bool,
     ) -> Result<Vec<GitCredential>, TaskGitCredentialsError> {
         with_retry(
             "Git credentials bootstrap",
@@ -1190,7 +1196,12 @@ impl AgentDriverRunner {
                     .map_err(|error| TaskGitCredentialsError::Request(error.into()))?
                     .token;
                     let response = ai_client
-                        .get_task_git_credentials(task_id_str, workload_token, false, false)
+                        .get_task_git_credentials(
+                            task_id_str,
+                            workload_token,
+                            false,
+                            use_factory_repositories,
+                        )
                         .await?;
                     driver::git_credentials::credentials_for_bootstrap(response)
                         .map_err(TaskGitCredentialsError::Request)
@@ -1262,6 +1273,7 @@ impl AgentDriverRunner {
         let credentials = match Self::fetch_task_git_credentials(
             task_id_str.clone(),
             Arc::clone(&ai_client),
+            factory_repository_contract(task_id_str.parse().ok()),
         )
         .await
         {
@@ -1515,7 +1527,7 @@ impl AgentDriverRunner {
                 let driver_options = driver::AgentDriverOptions {
                     working_dir: working_dir.clone(),
                     task_id,
-                    use_factory_repositories: false,
+                    use_factory_repositories: factory_repository_contract(task_id),
                     experimental: None,
                     parent_run_id: None,
                     should_share,

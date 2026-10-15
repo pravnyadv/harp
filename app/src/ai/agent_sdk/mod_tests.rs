@@ -71,7 +71,6 @@ fn paired_execution_launch_preserves_eager_settings_without_deferred_inventory()
         let root = tempfile::TempDir::new().unwrap();
         let args =
             parse_run_agent_args(&["agent", "run", "--task-id", TASK_ID, "--execution-id", "42"]);
-        let _capability = FeatureFlag::FactoryDeferredRepositories.override_enabled(true);
         let eager_repository = json!([{
             "forge": "GITHUB", "owner": "acme", "name": "api",
             "ref": {"type": "BRANCH", "value": "feature"},
@@ -100,7 +99,6 @@ fn paired_execution_launch_preserves_eager_settings_without_deferred_inventory()
             )
             .unwrap()
         });
-        assert!(!options.use_factory_repositories);
         assert_eq!(
             options.workspace.source_repos,
             vec![SourceRepo::new(
@@ -109,7 +107,6 @@ fn paired_execution_launch_preserves_eager_settings_without_deferred_inventory()
                 "api".into(),
             )]
         );
-        assert!(options.workspace.deferred_repos.is_empty());
         assert_eq!(options.workspace.setup_commands, ["prepare-workspace"]);
         assert_eq!(
             options.workspace.factory_skill_dirs,
@@ -123,31 +120,43 @@ fn paired_execution_launch_preserves_eager_settings_without_deferred_inventory()
 }
 
 #[test]
-fn paired_execution_advertises_no_deferred_capability_with_feature_enabled() {
-    let output = ProcessCommand::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "ai::agent_sdk::tests::deferred_capability_bootstrap_subprocess",
-            "--nocapture",
-        ])
-        .env("WARP_TEST_DEFERRED_CAPABILITY_BOOTSTRAP", "1")
-        .env("WARP_ISOLATION_PLATFORM", "docker")
-        .env("WARP_WORKLOAD_TOKEN", "test-workload-token")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+fn paired_execution_keeps_deferred_transport_disabled_and_scopes_factory_credentials() {
+    for (scenario, factory_marker) in [
+        ("factory", true),
+        ("non_factory", false),
+        ("flag_off", true),
+    ] {
+        let mut command = ProcessCommand::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "ai::agent_sdk::tests::deferred_capability_bootstrap_subprocess",
+                "--nocapture",
+            ])
+            .env("WARP_TEST_DEFERRED_CAPABILITY_BOOTSTRAP", scenario)
+            .env("WARP_ISOLATION_PLATFORM", "docker")
+            .env("WARP_WORKLOAD_TOKEN", "test-workload-token");
+        if factory_marker {
+            command.env("WARP_FACTORY_ID", "factory-one");
+        } else {
+            command.env_remove("WARP_FACTORY_ID");
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{scenario}: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[test]
 fn deferred_capability_bootstrap_subprocess() {
-    if std::env::var_os("WARP_TEST_DEFERRED_CAPABILITY_BOOTSTRAP").is_none() {
+    let Ok(scenario) = std::env::var("WARP_TEST_DEFERRED_CAPABILITY_BOOTSTRAP") else {
         return;
-    }
+    };
+    let use_factory_repositories = scenario == "factory";
     let eager = json!([{
         "forge": "GITLAB", "owner": "platform/backend", "name": "api",
         "ref": null, "cloneFrom": null, "preserveOrigin": true,
@@ -188,10 +197,13 @@ fn deferred_capability_bootstrap_subprocess() {
         )
         .expect(1)
         .create();
-    let credentials_input = json!({
+    let mut credentials_input = json!({
         "taskId": TASK_ID, "workloadToken": "test-workload-token",
         "acceptsPartialRefresh": false
     });
+    if use_factory_repositories {
+        credentials_input["useFactoryRepositories"] = json!(true);
+    }
     let credentials = server
         .mock("POST", "/graphql/v2")
         .match_query(Matcher::UrlEncoded(
@@ -214,7 +226,9 @@ fn deferred_capability_bootstrap_subprocess() {
     App::test((), |mut app| async move {
         let _refresh = FeatureFlag::GitCredentialRefresh.override_enabled(true);
         let _handoff = FeatureFlag::OzHandoff.override_enabled(false);
-        let _capability = FeatureFlag::FactoryDeferredRepositories.override_enabled(true);
+        let _capability =
+            FeatureFlag::FactoryDeferredRepositories.override_enabled(scenario != "flag_off");
+        assert!(!super::factory_repository_contract(None));
         let provider = app.add_singleton_model(|_| ServerApiProvider::new_for_test());
         let ai_client = provider.read(&app, |provider, _| provider.get_ai_client());
         let runner = app.add_singleton_model(|_| AgentDriverRunner);
@@ -242,9 +256,8 @@ fn deferred_capability_bootstrap_subprocess() {
         )
         .await
         .unwrap();
-        assert!(!options.use_factory_repositories);
+        assert_eq!(options.use_factory_repositories, use_factory_repositories);
         assert_eq!(options.workspace.source_repos.len(), 1);
-        assert!(options.workspace.deferred_repos.is_empty());
     });
     bootstrap.assert();
     credentials.assert();
