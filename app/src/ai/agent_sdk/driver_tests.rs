@@ -2789,6 +2789,7 @@ fn deferred_repository_semantic_skill_publication_without_initial_inventory() {
                     options.workspace = super::environment::WorkspaceConfiguration::from_resolved(
                         Vec::new(),
                         Vec::new(),
+                        Vec::new(),
                     )
                     .unwrap();
                     options.workspace.factory_skill_dirs = Some(Vec::new());
@@ -2914,6 +2915,96 @@ fn deferred_repository_runtime_exports_root_when_unset() {
     });
 }
 
+#[test]
+fn deferred_execution_policy_reaches_every_launch_and_legacy_clears_inheritance() {
+    use super::environment_preparation::{FILE_ENV, MODE_ENV};
+    for (harness, transport) in [
+        (Harness::Oz, HarnessTransport::Pty),
+        (Harness::Claude, HarnessTransport::Pty),
+        (Harness::Claude, HarnessTransport::Acp),
+        (Harness::Codex, HarnessTransport::Pty),
+        (Harness::Codex, HarnessTransport::Acp),
+        (Harness::Gemini, HarnessTransport::Pty),
+        (Harness::Gemini, HarnessTransport::Acp),
+    ] {
+        for capability in [None, Some(false), Some(true)] {
+            App::test((), |mut app| async move {
+                initialize_workspace_test_app(&mut app);
+                let root = TempDir::new().unwrap();
+                let mut options = crate::ai::agent_sdk::tests::agent_driver_options();
+                options.working_dir = root.path().to_owned();
+                options.selected_harness = harness;
+                options.harness_transport = transport;
+                let task_id = "00000000-0000-0000-0000-000000000001";
+                options.task_id = Some(task_id.parse().unwrap());
+                for name in [
+                    FILE_ENV,
+                    MODE_ENV,
+                    "OZ_RUN_ID",
+                    "WARP_RUN_ID",
+                    "WARP_EXECUTION_ID",
+                ] {
+                    options
+                        .secrets
+                        .insert(name.into(), ManagedSecretValue::raw_value("stale"));
+                }
+                if let Some(capability) = capability {
+                    options
+                        .workspace
+                        .bind_execution(
+                            task_id.into(),
+                            "42".into(),
+                            root.path().to_owned(),
+                            capability,
+                        )
+                        .unwrap();
+                }
+                let driver = app.update(|ctx| AgentDriver::create(options, ctx).unwrap());
+                driver.read(&app, |driver, ctx| {
+                    let launch = driver
+                        .terminal_driver
+                        .as_ref(ctx)
+                        .launch_env_vars_for_test
+                        .as_ref()
+                        .unwrap();
+                    for name in [
+                        FILE_ENV,
+                        MODE_ENV,
+                        "OZ_RUN_ID",
+                        "WARP_RUN_ID",
+                        "WARP_EXECUTION_ID",
+                        "OZ_WORKSPACE_ROOT",
+                        "WARP_WORKSPACE_ROOT",
+                    ] {
+                        assert_eq!(
+                            launch.get(std::ffi::OsStr::new(name)),
+                            driver.resolved_env_vars.get(std::ffi::OsStr::new(name))
+                        );
+                    }
+                    let value = |name: &str| launch.get(std::ffi::OsStr::new(name)).unwrap();
+                    assert_eq!(value("OZ_RUN_ID"), task_id);
+                    assert_eq!(value("WARP_RUN_ID"), task_id);
+                    if let Some(capability) = capability {
+                        assert_eq!(value(MODE_ENV), "execution");
+                        assert_eq!(value("WARP_EXECUTION_ID"), "42");
+                        let policy: serde_json::Value =
+                            serde_json::from_slice(&fs::read(value(FILE_ENV)).unwrap()).unwrap();
+                        assert_eq!(policy["supports_deferred_repositories"], capability);
+                        assert_eq!(policy["task_id"], task_id);
+                        assert_eq!(policy["execution_id"], "42");
+                        assert_eq!(policy["working_dir"], root.path().to_str().unwrap());
+                        assert_eq!(policy["eager"], json!([]));
+                        assert_eq!(policy["deferred"], json!([]));
+                    } else {
+                        assert_eq!(value(MODE_ENV), "legacy");
+                        assert!(value(FILE_ENV).is_empty());
+                        assert!(value("WARP_EXECUTION_ID").is_empty());
+                    }
+                });
+            });
+        }
+    }
+}
 #[test]
 fn deferred_repository_runtime_rejects_relative_root() {
     App::test((), |mut app| async move {

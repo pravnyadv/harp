@@ -30,6 +30,7 @@ use super::environment_checkout_protocol::{
     CloneFailureIdentityDiagnostics, ResolvedHeads, parse_resolved_head_sha,
     sanitize_git_author_name, sanitize_git_credential_username,
 };
+use super::environment_preparation::{PreparationPolicy, PreparationRepository};
 use super::terminal::TerminalDriver;
 use super::{AgentDriverError, Harness, failure_output, git_credentials};
 use crate::ai::agent_sdk::environment_snapshot::{
@@ -241,22 +242,70 @@ fn environment_snapshot(
 #[derive(Default)]
 pub(crate) struct WorkspaceConfiguration {
     pub source_repos: Vec<SourceRepo>,
+    pub deferred_repos: Vec<ResolvedRepository>,
     pub setup_commands: Vec<String>,
     /// Overrides `WARP_SKILL_DIRS` when present, including an empty list.
     pub factory_skill_dirs: Option<Vec<PathBuf>>,
     /// Retains an explicitly selected environment even when it has no repositories or commands.
     pub has_environment: bool,
+    pub(super) preparation_policy: Option<PreparationPolicy>,
+    resolved_repos: Vec<ResolvedRepository>,
     clone_requests: Vec<RepositoryCloneRequest>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ResolvedRepository {
     pub source: SourceRepo,
     pub checkout: Option<RepositoryHeadRef>,
     pub clone_from: Option<SourceRepo>,
     pub preserve_origin: bool,
+    pub expected_sha: Option<String>,
 }
 impl WorkspaceConfiguration {
+    pub(crate) fn bind_execution(
+        &mut self,
+        task_id: String,
+        execution_id: String,
+        working_dir: PathBuf,
+        supports_deferred_repositories: bool,
+    ) -> anyhow::Result<()> {
+        let records = |repos: &[ResolvedRepository]| -> anyhow::Result<Vec<PreparationRepository>> {
+            repos
+                .iter()
+                .map(|repo| {
+                    let clones = resolved_repository_clone_requests(std::slice::from_ref(repo))?;
+                    let batch = checkout_requests_batch(&clones, &working_dir)?;
+                    let mut request = batch
+                        .repositories
+                        .into_iter()
+                        .next()
+                        .ok_or(PrepareEnvironmentError::InvalidRuntimeState)?;
+                    request.remove_origin = clones[0].remove_origin;
+                    Ok(PreparationRepository {
+                        source: RepositoryIdentity {
+                            code_forge: repository_forge_for_repo(&repo.source)
+                                .ok_or(PrepareEnvironmentError::InvalidRuntimeState)?,
+                            repo_owner: repo.source.owner.clone(),
+                            repo_name: repo.source.repo.clone(),
+                        },
+                        request,
+                    })
+                })
+                .collect()
+        };
+        let policy = PreparationPolicy {
+            task_id,
+            execution_id,
+            working_dir: working_dir.clone(),
+            supports_deferred_repositories,
+            eager: records(&self.resolved_repos)?,
+            deferred: records(&self.deferred_repos)?,
+        };
+        policy.validate()?;
+        self.preparation_policy = Some(policy);
+        Ok(())
+    }
+
     /// Reports whether the workspace requires setup before harness startup.
     pub fn needs_preparation(&self) -> bool {
         self.has_environment || !self.source_repos.is_empty() || !self.setup_commands.is_empty()
@@ -281,16 +330,20 @@ impl WorkspaceConfiguration {
             repository_clone_requests(&source_repos, &preparation_overrides, remove_origins)?;
         Ok(Self {
             source_repos,
+            deferred_repos: Vec::new(),
             setup_commands,
             factory_skill_dirs: None,
             has_environment: environment.is_some(),
             clone_requests,
+            preparation_policy: None,
+            resolved_repos: Vec::new(),
         })
     }
 
     /// Builds a workspace from server-selected checkouts without resolving an environment locally.
     pub fn from_resolved(
         repositories: Vec<ResolvedRepository>,
+        deferred_repos: Vec<ResolvedRepository>,
         setup_commands: Vec<String>,
     ) -> Result<Self, PrepareEnvironmentError> {
         let clone_requests = resolved_repository_clone_requests(&repositories)?;
@@ -299,10 +352,13 @@ impl WorkspaceConfiguration {
                 .iter()
                 .map(|repo| repo.source.clone())
                 .collect(),
+            deferred_repos,
             setup_commands,
             factory_skill_dirs: None,
             has_environment: false,
             clone_requests,
+            preparation_policy: None,
+            resolved_repos: repositories,
         })
     }
 }
@@ -388,6 +444,9 @@ pub(crate) fn prepare_environment(
             factory_skill_dirs: _,
             clone_requests,
             has_environment: _,
+            deferred_repos: _,
+            preparation_policy: _,
+            resolved_repos: _,
         } = workspace;
         // Only index the codebase for the Oz harness; third-party harnesses (e.g. Claude)
         // have their own methods for navigating a codebase.
@@ -849,6 +908,7 @@ pub(super) struct RepositoryCloneRequest {
     pub(super) checkout: Option<RepositoryHeadRef>,
     pub(super) remove_origin: bool,
     pub(super) fetch_branch_only: bool,
+    pub(super) expected_sha: Option<String>,
 }
 
 fn repository_clone_requests(
@@ -888,6 +948,7 @@ fn repository_clone_requests(
                     preparation_override.clone_from.is_some()
                         && matches!(preparation_override.head, RepositoryHeadRef::Branch(_))
                 }),
+                expected_sha: None,
             })
         })
         .collect()
@@ -920,6 +981,7 @@ fn resolved_repository_clone_requests(
                 remove_origin: !repo.preserve_origin,
                 fetch_branch_only: repo.clone_from.is_some()
                     && matches!(repo.checkout, Some(RepositoryHeadRef::Branch(_))),
+                expected_sha: repo.expected_sha.clone(),
             })
         })
         .collect()
@@ -1113,6 +1175,8 @@ fn checkout_requests_batch(
                     checkout_name: request.checkout_name.clone(),
                     head: request.checkout.clone(),
                     fetch_branch_only: request.fetch_branch_only,
+                    expected_sha: request.expected_sha.clone(),
+                    remove_origin: false,
                 })
             })
             .collect::<Result<Vec<_>, PrepareEnvironmentError>>()?,

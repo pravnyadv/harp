@@ -106,6 +106,7 @@ pub(crate) mod environment;
 #[cfg(feature = "local_fs")]
 pub(crate) mod environment_checkout;
 mod environment_checkout_protocol;
+mod environment_preparation;
 mod error_classification;
 mod failure_output;
 pub(crate) mod git_credentials;
@@ -714,6 +715,7 @@ pub struct AgentDriver {
     /// `build_runner` so harnesses can look up resolved secret values
     /// without re-deriving precedence.
     resolved_env_vars: Arc<HashMap<OsString, OsString>>,
+    _preparation_file: Option<environment_preparation::PreparationFile>,
 
     output_format: OutputFormat,
 
@@ -1205,9 +1207,13 @@ impl AgentDriver {
                 error,
             })?,
         );
-        for name in ["OZ_WORKSPACE_ROOT", "WARP_WORKSPACE_ROOT"] {
-            env_vars.insert(OsString::from(name), working_dir.as_os_str().to_os_string());
-        }
+        let preparation_file = environment_preparation::launch_environment(
+            workspace.preparation_policy.as_ref(),
+            task_id.map(|id| id.to_string()).as_deref(),
+            &working_dir,
+            &mut env_vars,
+        )
+        .map_err(AgentDriverError::ConfigBuildFailed)?;
         if let Some(dirs) = &workspace.factory_skill_dirs {
             env_vars.insert(
                 OsString::from(WARP_SKILL_DIRS_ENV),
@@ -1339,6 +1345,7 @@ impl AgentDriver {
             working_dir,
             secrets: Arc::new(secrets),
             resolved_env_vars,
+            _preparation_file: preparation_file,
             output_format: OutputFormat::default(),
             task_id,
             use_factory_repositories,
@@ -1396,6 +1403,7 @@ impl AgentDriver {
             working_dir,
             secrets: Arc::new(HashMap::new()),
             resolved_env_vars: Arc::new(HashMap::new()),
+            _preparation_file: None,
             output_format: OutputFormat::default(),
             task_id: None,
             use_factory_repositories: false,

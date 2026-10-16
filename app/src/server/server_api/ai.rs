@@ -1763,10 +1763,11 @@ impl ServerApi {
         task_id: &str,
         execution_id: &str,
         workload_token: String,
+        supports_deferred_repositories: bool,
     ) -> anyhow::Result<ExecutionBootstrapData> {
-        let operation = ExecutionBootstrap::build(ExecutionBootstrapVariables {
+        let operation = ExecutionBootstrap::build_with_capabilities(ExecutionBootstrapVariables {
             execution_id: execution_id.to_string().into(),
-            supports_deferred_repositories: false,
+            supports_deferred_repositories,
             secrets_input: TaskSecretsInput {
                 task_id: task_id.to_string().into(),
                 workload_token,
@@ -1775,7 +1776,7 @@ impl ServerApi {
                 task_id: task_id.to_string().into(),
             },
             request_context: get_request_context(),
-        });
+        })?;
         let response = self.send_graphql_request(operation, None).await?;
         let (config, attachments) = match response.task {
             BootstrapTaskResult::TaskOutput(output) => (

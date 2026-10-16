@@ -51,11 +51,11 @@ fn execution_bootstrap_response() -> Value {
                         "computerUseEnabled": false,
                         "computerUseModelId": null,
                         "inferenceProviders": null,
-                        "repositories": [{
+                        "repositories": [],
+                        "deferredRepositories": [{
                             "forge": "GITLAB", "owner": "platform/backend", "name": "api",
-                            "ref": {"type": "COMMIT_SHA", "value": "0123456789abcdef0123456789abcdef01234567"},
-                            "cloneFrom": {"codeForge": "GITHUB", "owner": "acme", "repo": "api"},
-                            "preserveOrigin": true
+                            "ref": null, "cloneFrom": null, "preserveOrigin": true,
+                            "expectedSha": "0123456789abcdef0123456789abcdef01234567"
                         }],
                         "setupCommands": [],
                         "providers": null,
@@ -84,7 +84,11 @@ fn execution_bootstrap_response() -> Value {
     })
 }
 
-fn mock_execution_bootstrap(response: Value, workload_token: &str) -> Mock {
+fn mock_execution_bootstrap(
+    response: Value,
+    workload_token: &str,
+    supports_deferred_repositories: bool,
+) -> Mock {
     let mut server = warp_core::channel::ChannelState::mock_server();
     server
         .mock("POST", "/graphql/v2")
@@ -95,11 +99,17 @@ fn mock_execution_bootstrap(response: Value, workload_token: &str) -> Mock {
         .match_body(Matcher::PartialJson(json!({
             "variables": {
                 "executionId": "1",
-                "supportsDeferredRepositories": false,
+                "supportsDeferredRepositories": supports_deferred_repositories,
                 "secretsInput": {"taskId": "task-one", "workloadToken": workload_token},
                 "taskInput": {"taskId": "task-one"}
             }
         })))
+        .match_request(move |request| {
+            let body: Value = serde_json::from_slice(request.body().unwrap()).unwrap();
+            let query = body["query"].as_str().unwrap();
+            query.contains("deferredRepositories") == supports_deferred_repositories
+                && query.contains("expectedSha") == supports_deferred_repositories
+        })
         .with_status(200)
         .with_body(response.to_string())
         .expect(1)
@@ -145,34 +155,68 @@ fn block_snapshot_resolves_url_before_deserializing_storage_bytes() {
 
 #[test]
 fn execution_bootstrap_fetches_config_secrets_and_attachments_once() {
-    let _capability =
-        warp_core::features::FeatureFlag::FactoryDeferredRepositories.override_enabled(true);
-    let request = mock_execution_bootstrap(execution_bootstrap_response(), "token-success");
-    let data = block_on(execution_bootstrap_server_api().get_execution_bootstrap(
-        "task-one",
-        "1",
-        "token-success".into(),
-    ))
-    .unwrap();
-    assert_eq!(data.config.task_id.inner(), "task-one");
-    assert_eq!(data.config.execution_id.inner(), "1");
-    assert_eq!(data.config.repositories.len(), 1);
-    let repository = &data.config.repositories[0];
-    assert_eq!(repository.forge, CodeForge::GitLab);
-    assert_eq!(repository.owner, "platform/backend");
-    assert_eq!(repository.name, "api");
-    assert_eq!(
-        repository.ref_.as_ref().unwrap().value,
-        "0123456789abcdef0123456789abcdef01234567"
-    );
-    assert_eq!(
-        repository.clone_from.as_ref().unwrap().code_forge,
-        CodeForge::GitHub
-    );
-    assert!(repository.preserve_origin);
-    assert!(data.secrets.unwrap().contains_key("API_KEY"));
-    assert_eq!(data.attachments.unwrap()[0].filename, "file-one_test.txt");
-    request.assert();
+    for supports_deferred_repositories in [false, true] {
+        let mut response = execution_bootstrap_response();
+        if !supports_deferred_repositories {
+            let config = &mut response["data"]["task"]["task"]["executionConfig"];
+            config["repositories"] = json!([{
+                "forge": "GITLAB", "owner": "platform/backend", "name": "api",
+                "ref": {"type": "COMMIT_SHA", "value": "0123456789abcdef0123456789abcdef01234567"},
+                "cloneFrom": {"codeForge": "GITHUB", "owner": "acme", "repo": "api"},
+                "preserveOrigin": true
+            }]);
+            config
+                .as_object_mut()
+                .unwrap()
+                .remove("deferredRepositories");
+        }
+        let request =
+            mock_execution_bootstrap(response, "token-success", supports_deferred_repositories);
+        let data = block_on(execution_bootstrap_server_api().get_execution_bootstrap(
+            "task-one",
+            "1",
+            "token-success".into(),
+            supports_deferred_repositories,
+        ))
+        .unwrap();
+        assert_eq!(data.config.task_id.inner(), "task-one");
+        assert_eq!(data.config.execution_id.inner(), "1");
+        if supports_deferred_repositories {
+            assert!(data.config.repositories.is_empty());
+            let deferred_repositories = data.config.deferred_repositories.unwrap();
+            assert_eq!(deferred_repositories.len(), 1);
+            assert_eq!(deferred_repositories[0].forge, CodeForge::GitLab,);
+            assert_eq!(deferred_repositories[0].owner, "platform/backend");
+            assert_eq!(deferred_repositories[0].name, "api");
+            assert_eq!(
+                deferred_repositories[0].expected_sha.as_deref(),
+                Some("0123456789abcdef0123456789abcdef01234567")
+            );
+        } else {
+            assert!(data.config.deferred_repositories.is_none());
+            assert_eq!(data.config.repositories.len(), 1);
+            assert_eq!(data.config.repositories[0].forge, CodeForge::GitLab);
+            assert_eq!(data.config.repositories[0].owner, "platform/backend");
+            assert_eq!(data.config.repositories[0].name, "api");
+            assert_eq!(
+                data.config.repositories[0].ref_.as_ref().unwrap().value,
+                "0123456789abcdef0123456789abcdef01234567"
+            );
+            assert_eq!(
+                data.config.repositories[0]
+                    .clone_from
+                    .as_ref()
+                    .unwrap()
+                    .code_forge,
+                CodeForge::GitHub
+            );
+            assert!(data.config.repositories[0].preserve_origin);
+            assert!(data.config.repositories[0].expected_sha.is_none());
+        }
+        assert!(data.secrets.unwrap().contains_key("API_KEY"));
+        assert_eq!(data.attachments.unwrap()[0].filename, "file-one_test.txt");
+        request.assert();
+    }
 }
 
 #[test]
@@ -183,11 +227,12 @@ fn execution_bootstrap_preserves_secret_errors_with_task_configuration() {
         "error": {"__typename": "InvalidSecretError", "message": "Unable to access task secrets"},
         "responseContext": {"serverVersion": null}
     });
-    let request = mock_execution_bootstrap(response, "token-errors");
+    let request = mock_execution_bootstrap(response, "token-errors", false);
     let data = block_on(execution_bootstrap_server_api().get_execution_bootstrap(
         "task-one",
         "1",
         "token-errors".into(),
+        false,
     ))
     .unwrap();
     assert_eq!(data.config.execution_id.inner(), "1");
@@ -207,11 +252,12 @@ fn execution_bootstrap_rejects_configuration_errors() {
         "error": {"__typename": "ResourceUnavailableError", "message": "Required repository is unavailable"},
         "responseContext": {"serverVersion": null}
     });
-    let request = mock_execution_bootstrap(response, "token-config-error");
+    let request = mock_execution_bootstrap(response, "token-config-error", false);
     let error = block_on(execution_bootstrap_server_api().get_execution_bootstrap(
         "task-one",
         "1",
         "token-config-error".into(),
+        false,
     ))
     .err()
     .expect("configuration errors must abort bootstrap");

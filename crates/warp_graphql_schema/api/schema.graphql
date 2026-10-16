@@ -5210,6 +5210,7 @@ type ExecutionRepository {
   ref: ExecutionRepositoryRef
   cloneFrom: SourceRepo
   preserveOrigin: Boolean!
+  expectedSha: String
 }
 
 
@@ -5273,7 +5274,7 @@ type ExecutionConfiguration {
   computerUseModelId: String
   inferenceProviders: InferenceProviderClientConfigs
   repositories: [ExecutionRepository!]!
-  deferredRepositories: [SourceRepo!]!
+  deferredRepositories: [ExecutionRepository!]!
   setupCommands: [String!]!
   providers: CloudProviderClientConfigs
   sessionSharingAcls: [SessionSharingAclSpec!]!
