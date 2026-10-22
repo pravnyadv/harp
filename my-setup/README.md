@@ -41,3 +41,39 @@ All live in `~/.harp/settings.toml` and apply on save, except `sidebar_font`.
 | `appearance.blocks.shade_restored_blocks` | `false` | Output from the previous session looks like new output. |
 | `appearance.blocks.selected_block_fill` | `6` | Faint tint on a selected block (Harp default 25; 0 keeps only the border). |
 | `general.snackbar_enabled` | `true` | Keeps the command pinned at the top while scrolling long output. |
+
+## Claude Code side
+
+These live outside Harp, in `~/.claude` and `~/.zshrc`. Open Claude Code in this repo on the new
+Mac and paste the prompt below; it does each step and reports back.
+
+```text
+Set up my Claude Code side from my-setup/README.md in this repo. Do each step, show me what changed,
+and back up any file before editing it:
+1. Run ./my-setup/claude/install.sh (installs the /handoff skill, its scripts, and the Harp and
+   Warp tab configs).
+2. Install Warp's Claude Code plugin, which Harp uses for each tab's working / needs-you / done
+   status: `claude plugin marketplace add warpdotdev/claude-code-warp`, then
+   `claude plugin install warp@claude-code-warp`. Tell me to run /reload-plugins in open sessions.
+3. In ~/.claude/settings.json, remove any hook whose command runs `afplay` (notification sounds),
+   keeping every other hook in the same groups. Check the file is still valid JSON.
+4. In ~/.zshrc, right after the line `source $ZSH/oh-my-zsh.sh`, add these two lines so tab
+   titles show the folder name instead of user@host (skip if oh-my-zsh is not used):
+     ZSH_THEME_TERM_TITLE_IDLE="%1~"
+     ZSH_THEME_TERM_TAB_TITLE_IDLE="%1~"
+```
+
+What each piece does:
+
+| Piece | Where | Effect |
+|---|---|---|
+| `/handoff` skill | `~/.claude/skills/handoff/SKILL.md` | "hand this off" starts a separate Claude session for a task, in its own tab. |
+| `handoff` | `~/.claude/bin/handoff` | Queues the task, then opens a `harp://` tab (Warp if Harp is closed, a background session if neither runs). Children of one session share a tab color. |
+| `handoff-open` | `~/.claude/bin/handoff-open` | Runs in the new tab: claims the task, titles the tab `⎿ <name>`, starts `claude -n <name>`. |
+| Tab configs | `~/.harp/tab_configs/`, `~/.warp/tab_configs/` | The six colored tab templates the links above open. |
+| Warp plugin | Claude Code plugins | Sends each session's status to Harp's sidebar. |
+| No sound hooks | `~/.claude/settings.json` | Silent Claude notifications. |
+| Tab titles | `~/.zshrc` | Shells show their folder name. |
+
+`/handoff` in a Harp tab is untested: the script and the `harp://tab_config` link are the same as
+the Warp path that was dry-run tested, but no real Harp tab has been opened by it yet.

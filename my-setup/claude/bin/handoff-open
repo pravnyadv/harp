@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Runs inside the Harp or Warp tab that `handoff` opened: claims the oldest queued job and starts it.
+set -uo pipefail
+
+QUEUE="$HOME/.claude/handoff/pending"
+CLAIMED="$HOME/.claude/handoff/claimed"
+mkdir -p "$CLAIMED"
+
+job=""
+for f in "$QUEUE"/*.json; do
+  [[ -e $f ]] || break
+  # mv is atomic, so two tabs opening at once can never claim the same job.
+  if mv "$f" "$CLAIMED/" 2>/dev/null; then job="$CLAIMED/$(basename "$f")"; break; fi
+done
+
+if [[ -z $job ]]; then
+  echo "handoff: no queued task"
+  exit 0
+fi
+
+name=$(jq -r .name "$job")
+cwd=$(jq -r .cwd "$job")
+prompt=$(jq -r .prompt "$job")
+
+cd "$cwd" 2>/dev/null || echo "handoff: $cwd is missing, staying in $PWD"
+printf '\033]0;%s\007' "⎿ $name"
+# Keep the "⎿ name" title: Claude Code would otherwise retitle the tab with its own topic.
+export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1
+claude -n "$name" "$prompt"

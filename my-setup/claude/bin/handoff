@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Queue a task for a new Claude session and open it in a new Harp (or Warp) tab.
+# Usage: handoff --name <kebab-name> --parent <session-name> [--mode standalone|report|interactive] [--cwd DIR] < prompt
+set -euo pipefail
+
+QUEUE="$HOME/.claude/handoff/pending"
+COLORS=(blue magenta cyan green yellow red)
+
+name="" parent="" mode="report" cwd="$PWD"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --name) name="$2"; shift 2 ;;
+    --parent) parent="$2"; shift 2 ;;
+    --mode) mode="$2"; shift 2 ;;
+    --cwd) cwd="$2"; shift 2 ;;
+    *) echo "handoff: unknown arg $1" >&2; exit 2 ;;
+  esac
+done
+[[ -n $name && -n $parent ]] || { echo "handoff: --name and --parent are required" >&2; exit 2; }
+[[ $name =~ ^[a-z0-9][a-z0-9-]{0,39}$ ]] || { echo "handoff: name must be short kebab-case" >&2; exit 2; }
+prompt=$(cat)
+[[ -n $prompt ]] || { echo "handoff: empty prompt on stdin" >&2; exit 2; }
+
+case "$mode" in
+  standalone) rules="Work on this on your own. Do not message the session that started you. Finish the task and stop." ;;
+  report) rules="You were started by the Claude session \"$parent\". Use SendMessage to \"$parent\" only for a blocker, a decision you cannot make yourself, or a short final result. Send nothing else." ;;
+  interactive) rules="A human will talk to you directly in this tab, so ask them, not the parent. When the task is done, send one short final result to the Claude session \"$parent\" with SendMessage." ;;
+  *) echo "handoff: mode must be standalone, report or interactive" >&2; exit 2 ;;
+esac
+
+# Children of one parent share a tab color, so a family reads as a group.
+hash=$(printf '%s' "$parent" | cksum | cut -d' ' -f1)
+color=${COLORS[$((hash % ${#COLORS[@]}))]}
+
+mkdir -p "$QUEUE"
+job="$QUEUE/$(date +%s)-$$-$name.json"
+jq -n --arg name "$name" --arg parent "$parent" --arg mode "$mode" --arg cwd "$cwd" \
+  --arg prompt "$prompt"$'\n\n'"$rules" '{name:$name,parent:$parent,mode:$mode,cwd:$cwd,prompt:$prompt}' > "$job.tmp"
+mv "$job.tmp" "$job"
+
+if pgrep -qf 'Harp.app/Contents/MacOS'; then
+  open "harp://tab_config/handoff-$color"
+  echo "handoff: opening \"$name\" in a new Harp tab ($color)"
+elif pgrep -qf 'Warp.app/Contents/MacOS'; then
+  open "warp://tab_config/handoff-$color"
+  echo "handoff: opening \"$name\" in a new Warp tab ($color)"
+else
+  # No Harp or Warp window to open a tab in: start it in the background so the work begins anyway.
+  rm "$job"
+  (cd "$cwd" && claude --bg -n "$name" "$prompt"$'\n\n'"$rules")
+  echo "handoff: neither Harp nor Warp is running, started \"$name\" in the background (claude attach $name)"
+fi
