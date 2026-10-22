@@ -46,4 +46,26 @@ define_settings_group!(BlockListSettings, settings: [
        toml_path: "appearance.blocks.show_block_dividers",
        description: "Whether to show dividers between terminal blocks.",
    }
+   shade_restored_blocks: ShadeRestoredBlocks {
+       type: bool,
+       default: true,
+       supported_platforms: SupportedPlatforms::ALL,
+       sync_to_cloud: SyncToCloud::Never,
+       surface: settings::SettingSurfaces::GUI,
+       private: false,
+       storage_key: "ShadeRestoredBlocks",
+       toml_path: "appearance.blocks.shade_restored_blocks",
+       description: "Whether blocks restored from a previous session get a tinted background. Off draws them like new output.",
+   }
+   selected_block_fill: SelectedBlockFill {
+       type: u8,
+       default: 25,
+       supported_platforms: SupportedPlatforms::ALL,
+       sync_to_cloud: SyncToCloud::Never,
+       surface: settings::SettingSurfaces::GUI,
+       private: false,
+       storage_key: "SelectedBlockFill",
+       toml_path: "appearance.blocks.selected_block_fill",
+       description: "Opacity, 0 to 100, of the accent fill on a selected block. Its border still marks the selection at 0.",
+   }
 ]);

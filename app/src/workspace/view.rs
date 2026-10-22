@@ -154,8 +154,8 @@ use super::rewind_confirmation_dialog::{
     RewindConfirmationDialog, RewindConfirmationEvent, RewindDialogSource,
 };
 use super::tab_settings::{
-    HeaderToolbarChipSelection, NewTabPlacement, TabSettings, TabSettingsChangedEvent,
-    VerticalTabsDisplayGranularity, WorkspaceDecorationVisibility,
+    AutoGroupTabs, HeaderToolbarChipSelection, NewTabPlacement, TabSettings,
+    TabSettingsChangedEvent, VerticalTabsDisplayGranularity, WorkspaceDecorationVisibility,
 };
 use super::util::{
     PaneViewLocator, TabMovement, TerminalSessionFallbackBehavior, WelcomeTipsViewState,
@@ -580,9 +580,6 @@ const FRAMED_CARD_CORNER_RADIUS: f32 = 10.;
 /// Titlebar height in the framed layout: the traffic lights center 28 px from the top, level with
 /// the sidebar's header buttons and the card header (the button constraint adds 1 px).
 const FRAMED_TITLEBAR_HEIGHT: f32 = 54.;
-/// Card padding left of the terminal under the card header, so tmux text (which brings no inset
-/// of its own) starts 32 px in, under the header's name.
-const FRAMED_CARD_CONTENT_LEFT_PADDING: f32 = 32.;
 /// Height for all panel headers (tab bar, warp drive, resource center, theme chooser, etc.).
 /// This ensures consistent header heights across all UI panels.
 pub const PANEL_HEADER_HEIGHT: f32 = TAB_BAR_HEIGHT;
@@ -4064,6 +4061,14 @@ impl Workspace {
                 }
                 ctx.notify();
             }
+            TabSettingsChangedEvent::AutoGroupTabs { .. } => {
+                let pane_group_ids: Vec<EntityId> =
+                    self.tabs.iter().map(|tab| tab.pane_group.id()).collect();
+                for pane_group_id in pane_group_ids {
+                    self.auto_group_tab(pane_group_id, ctx);
+                }
+                ctx.notify();
+            }
             TabSettingsChangedEvent::VerticalTabsViewMode { .. }
             | TabSettingsChangedEvent::VerticalTabsTabItemMode { .. }
             | TabSettingsChangedEvent::VerticalTabsPrimaryInfo { .. }
@@ -4074,7 +4079,17 @@ impl Workspace {
             | TabSettingsChangedEvent::VerticalTabsShowPrLink { .. }
             | TabSettingsChangedEvent::VerticalTabsShowDiffStats { .. }
             | TabSettingsChangedEvent::HideTitleBarSearchBarInVerticalTabs { .. }
-            | TabSettingsChangedEvent::VerticalTabsFullTabMenu { .. } => {
+            | TabSettingsChangedEvent::VerticalTabsFullTabMenu { .. }
+            | TabSettingsChangedEvent::SidebarPalette { .. }
+            | TabSettingsChangedEvent::SidebarColorOverrides { .. }
+            | TabSettingsChangedEvent::SidebarGlass { .. }
+            | TabSettingsChangedEvent::SidebarSubtitle { .. }
+            | TabSettingsChangedEvent::SidebarRowStyle { .. }
+            | TabSettingsChangedEvent::SidebarRowGap { .. }
+            | TabSettingsChangedEvent::FramedCardPadding { .. }
+            | TabSettingsChangedEvent::SidebarTitleSize { .. }
+            // The font is loaded once at startup; repainting keeps the match exhaustive.
+            | TabSettingsChangedEvent::SidebarFont { .. } => {
                 ctx.notify();
             }
             TabSettingsChangedEvent::VerticalTabsShowDetailsOnHover { .. } => {
@@ -6034,6 +6049,69 @@ impl Workspace {
 
         tab.default_directory_color = color;
         ctx.notify();
+    }
+
+    /// Harp: with `appearance.vertical_tabs.auto_group = "project"`, puts an ungrouped tab into the
+    /// group named after its project, creating the group when missing. Tabs already in a group stay
+    /// put, so moving a tab by hand always wins.
+    fn auto_group_tab(&mut self, pane_group_id: EntityId, ctx: &mut ViewContext<Self>) {
+        if !FeatureFlag::GroupedTabs.is_enabled()
+            || *TabSettings::as_ref(ctx).auto_group_tabs.value() != AutoGroupTabs::Project
+        {
+            return;
+        }
+        let Some(tab_index) = self
+            .tabs
+            .iter()
+            .position(|tab| tab.pane_group.id() == pane_group_id)
+        else {
+            return;
+        };
+        if self.tabs[tab_index].group_id.is_some() {
+            return;
+        }
+        let Some(project) = Self::tab_project_name(&self.tabs[tab_index], ctx) else {
+            return;
+        };
+        let existing = self
+            .tab_groups
+            .values()
+            .find(|group| group.name.as_deref() == Some(project.as_str()))
+            .map(|group| group.id);
+        let group_id = existing.unwrap_or_else(|| {
+            let mut group = TabGroup::new();
+            group.name = Some(project);
+            let id = group.id;
+            self.tab_groups.insert(id, group);
+            id
+        });
+        self.move_tab_to_group(tab_index, group_id, ctx);
+    }
+
+    /// The tab's project: its git repo's folder name, a worktree under `worktrees/<repo>/` counting
+    /// as `<repo>`, else its working folder's name. `None` for the home folder or no local session.
+    fn tab_project_name(tab: &TabData, ctx: &ViewContext<Self>) -> Option<String> {
+        let terminal_view = tab.pane_group.as_ref(ctx).active_session_view(ctx)?;
+        let terminal_view = terminal_view.as_ref(ctx);
+        let path = terminal_view
+            .current_local_repo_path()
+            .map(Path::to_path_buf)
+            .or_else(|| {
+                terminal_view
+                    .canonical_session_pwd_if_local(ctx)
+                    .map(|pwd| pwd.as_path().to_path_buf())
+            })?;
+        if dirs::home_dir().is_some_and(|home| home == path) {
+            return None;
+        }
+        let parts: Vec<&str> = path.iter().filter_map(|part| part.to_str()).collect();
+        let worktree_repo = parts
+            .iter()
+            .position(|part| *part == "worktrees")
+            .and_then(|index| parts.get(index + 1));
+        worktree_repo
+            .or(parts.last())
+            .map(|name| (*name).to_owned())
     }
 
     fn clear_tab_name_editor(&mut self, ctx: &mut ViewContext<Self>) {
@@ -16658,6 +16736,7 @@ impl Workspace {
                 {
                     Self::sync_codebase_tab_color(tab, ctx);
                 }
+                self.auto_group_tab(pane_group.id(), ctx);
             }
             pane_group::Event::ActiveSessionChanged => {
                 self.update_active_session(ctx);
@@ -17179,6 +17258,7 @@ impl Workspace {
                 {
                     Self::sync_codebase_tab_color(tab, ctx);
                 }
+                self.auto_group_tab(pane_group.id(), ctx);
             }
             #[cfg(feature = "local_fs")]
             pane_group::Event::RemoteRepoNavigated { remote_path } => {
@@ -22187,17 +22267,21 @@ impl Workspace {
         content: Box<dyn Element>,
         header: Option<Box<dyn Element>>,
         appearance: &Appearance,
-        _ctx: &AppContext,
+        ctx: &AppContext,
     ) -> Container {
         // Inner padding keeps the content's square corners inside the rounding (an inset of
-        // 0.3 × radius clears the arc). Under a header the terminal's text starts 32 px in (its
-        // own padding is 16).
+        // 0.3 × radius clears the arc). Under a header the terminal's text starts
+        // `appearance.vertical_tabs.card_padding` in, plus its own padding.
         let inner_padding = (FRAMED_CARD_CORNER_RADIUS * 0.3).ceil();
+        let left_padding = TabSettings::as_ref(ctx)
+            .framed_card_padding
+            .value()
+            .clamp(0., 64.);
         let content = if header.is_some() {
             Container::new(content)
                 .with_padding(
                     warpui::elements::Padding::uniform(inner_padding)
-                        .with_left(FRAMED_CARD_CONTENT_LEFT_PADDING)
+                        .with_left(left_padding)
                         .with_top(0.),
                 )
                 .finish()

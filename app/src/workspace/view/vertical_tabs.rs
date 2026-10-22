@@ -2915,7 +2915,7 @@ fn render_tab_group_internal(
                         is_this_tab_dragging,
                         app,
                     ))
-                    .with_height(sidebar::ROW_HEIGHT)
+                    .with_height(sidebar::row_height(app))
                     .finish();
                     render_pane_row_element(
                         pane_props,
@@ -3170,7 +3170,13 @@ fn render_tab_group_internal(
             let unread = sidebar_row_unread(tab.inactive, tab.marked_unread, status, app);
             draggable = draggable
                 .with_keep_original_visible(true)
-                .with_alternate_drag_element(sidebar::drag_preview(title, status, unread, app));
+                .with_alternate_drag_element(sidebar::drag_preview(
+                    title,
+                    sidebar::tab_subtitle(tab, app),
+                    status,
+                    unread,
+                    app,
+                ));
         }
         let draggable = draggable
             .on_drag_start(|ctx, _, _| {
@@ -3641,15 +3647,16 @@ fn render_framed_other_section(
     let drop_before = live_drop
         .filter(|(_, group)| group.is_none())
         .map(|(before, _)| before);
+    let mut rows: Vec<Box<dyn Element>> = Vec::new();
     for (tab_index, filtered_pane_ids) in members {
         if collapsed && *tab_index != workspace.active_tab_index {
             continue;
         }
         if drop_before == Some(*tab_index) {
-            column.add_child(sidebar::insert_line());
+            rows.push(sidebar::insert_line());
         }
         let tab = &workspace.tabs[*tab_index];
-        column.add_child(render_tab_group(
+        rows.push(render_tab_group(
             state,
             workspace,
             *tab_index,
@@ -3667,7 +3674,10 @@ fn render_framed_other_section(
     if let Some((last_index, _)) = members.last()
         && drop_before == Some(last_index + 1)
     {
-        column.add_child(sidebar::insert_line());
+        rows.push(sidebar::insert_line());
+    }
+    if !rows.is_empty() {
+        column.add_child(sidebar::section_rows(rows, app));
     }
     column.finish()
 }
@@ -3800,6 +3810,8 @@ fn render_grouped_tab_container(
 
         // Collapsed groups hide member rows in the panel chrome; the members remain in `workspace.tabs`.
         // The framed sidebar keeps the active tab's row under its collapsed group.
+        // Framed rows are gathered so `sidebar::section_rows` can lay them out as one section.
+        let mut framed_rows: Vec<Box<dyn Element>> = Vec::new();
         if !is_collapsed || framed {
             let last_member_idx = members.len().saturating_sub(1);
             for (i, (tab_index, filtered_pane_ids)) in members.iter().enumerate() {
@@ -3809,7 +3821,7 @@ fn render_grouped_tab_container(
                 if live_drop
                     .is_some_and(|(before, group)| group == Some(group_id) && before == *tab_index)
                 {
-                    content.add_child(sidebar::insert_line());
+                    framed_rows.push(sidebar::insert_line());
                 }
                 let tab = &workspace.tabs[*tab_index];
                 let insert_after_index = if i == last_member_idx {
@@ -3841,11 +3853,14 @@ fn render_grouped_tab_container(
                         .with_left(TAB_GROUP_MEMBER_INDENT)
                         .with_right(TAB_GROUP_CONTENT_INSET)
                 };
-                content.add_child(
-                    Container::new(tab_element)
-                        .with_padding(member_padding)
-                        .finish(),
-                );
+                let member = Container::new(tab_element)
+                    .with_padding(member_padding)
+                    .finish();
+                if framed {
+                    framed_rows.push(member);
+                } else {
+                    content.add_child(member);
+                }
             }
         }
 
@@ -3855,7 +3870,10 @@ fn render_grouped_tab_container(
                 group == Some(group_id) && before == last_index + 1
             })
         {
-            content.add_child(sidebar::insert_line());
+            framed_rows.push(sidebar::insert_line());
+        }
+        if !framed_rows.is_empty() {
+            content.add_child(sidebar::section_rows(framed_rows, app));
         }
 
         // When the group is colored, tint the container with the group's color as
@@ -8975,10 +8993,13 @@ pub(super) mod sidebar {
     use crate::ai::agent::conversation::ConversationStatus;
     use crate::appearance::Appearance;
     use crate::tab::TabData;
+    use crate::terminal::TerminalView;
     use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
     use crate::workspace::Workspace;
     use crate::workspace::action::WorkspaceAction;
     use crate::workspace::tab_group::TabGroupId;
+    use crate::workspace::tab_settings::{SidebarRowStyle, SidebarSubtitle, TabSettings};
+    use settings::Setting as _;
 
     pub(in crate::workspace::view) const SIDEBAR_WIDTH: f32 = 272.;
     pub(in crate::workspace::view) const HEADER_HEIGHT: f32 = 56.;
@@ -8988,6 +9009,8 @@ pub(super) mod sidebar {
     pub(super) const SECTION_GAP: f32 = 14.;
     pub(super) const ROW_GAP: f32 = 1.;
     pub(super) const ROW_HEIGHT: f32 = 30.;
+    /// A row with `sidebar_subtitle` on: the title line plus the branch and folder line.
+    const ROW_HEIGHT_TWO_LINES: f32 = 46.;
     /// Row titles, and the rename field that replaces one, are 13 px (Row.dc.html).
     pub(in crate::workspace::view) const ROW_TITLE_SIZE: f32 = 13.;
     pub(super) const ROW_RADIUS: f32 = 8.;
@@ -9022,23 +9045,44 @@ pub(super) mod sidebar {
     /// render by `colors::sync`. Orange means "needs you" in both.
     pub(in crate::workspace::view) mod colors {
         #![allow(non_snake_case)]
+        use std::sync::RwLock;
         use std::sync::atomic::{AtomicBool, Ordering};
 
         use super::{black, rgb};
         use pathfinder_color::ColorU;
+        use settings::Setting as _;
         use warp_core::ui::theme::ColorScheme;
         use warpui::{AppContext, SingletonEntity};
 
         use crate::appearance::Appearance;
+        use crate::workspace::tab_settings::{SidebarPalette, TabSettings};
 
         static DARK: AtomicBool = AtomicBool::new(false);
+        /// The palette `sync` last built; `None` until the first render, when the tokens fall
+        /// back to the built-in light or dark values.
+        static PALETTE: RwLock<Option<Palette>> = RwLock::new(None);
 
-        /// Follows the active theme: a theme with light text on a dark background gets the dark
-        /// palette. Every window shares the one theme, so one switch serves them all.
+        /// Rebuilds the palette from the active theme and the `appearance.vertical_tabs.sidebar_*`
+        /// settings: the light or dark base, then the theme tint, then solid glass, then the
+        /// per-token overrides. Every window shares the one theme, so one palette serves them all.
         pub fn sync(app: &AppContext) {
-            let dark = Appearance::as_ref(app).theme().inferred_color_scheme()
-                == ColorScheme::LightOnDark;
+            let theme = Appearance::as_ref(app).theme();
+            let dark = theme.inferred_color_scheme() == ColorScheme::LightOnDark;
+            let settings = TabSettings::as_ref(app);
+            let mut palette = if dark { Palette::dark() } else { Palette::light() };
+            if *settings.sidebar_palette.value() == SidebarPalette::Theme {
+                palette.tint_from(theme.background().into_solid(), dark);
+            }
+            if !*settings.sidebar_glass.value() {
+                palette.GLASS_TINT = ColorU { a: 0xff, ..palette.SIDEBAR };
+            }
+            for (name, color) in settings.sidebar_colors.value().iter() {
+                if let Some(color) = parse_hex(color) {
+                    palette.set(name, color);
+                }
+            }
             DARK.store(dark, Ordering::Relaxed);
+            *PALETTE.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(palette);
         }
 
         pub fn is_dark() -> bool {
@@ -9049,12 +9093,90 @@ pub(super) mod sidebar {
             ColorU { r: 255, g: 255, b: 255, a: alpha }
         }
 
+        /// `#rrggbb` or `#rrggbbaa`.
+        fn parse_hex(text: &str) -> Option<ColorU> {
+            let hex = text.trim().strip_prefix('#')?;
+            let value = u32::from_str_radix(hex, 16).ok()?;
+            match hex.len() {
+                6 => Some(rgb(value)),
+                8 => Some(ColorU { a: (value & 0xff) as u8, ..rgb(value >> 8) }),
+                _ => None,
+            }
+        }
+
+        fn mix(from: ColorU, to: ColorU, amount: f32) -> ColorU {
+            let channel = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * amount).round() as u8;
+            ColorU {
+                r: channel(from.r, to.r),
+                g: channel(from.g, to.g),
+                b: channel(from.b, to.b),
+                a: 0xff,
+            }
+        }
+
         macro_rules! tokens {
             ($($name:ident: $light:expr, $dark:expr;)*) => {
+                #[derive(Clone, Copy)]
+                struct Palette {
+                    $($name: ColorU,)*
+                }
+
+                impl Palette {
+                    fn light() -> Self {
+                        Self { $($name: $light,)* }
+                    }
+
+                    fn dark() -> Self {
+                        Self { $($name: $dark,)* }
+                    }
+
+                    /// Sets the token whose name matches `name` ignoring case (`needs_text`).
+                    fn set(&mut self, name: &str, color: ColorU) {
+                        $(if stringify!($name).eq_ignore_ascii_case(name) {
+                            self.$name = color;
+                            return;
+                        })*
+                    }
+                }
+
                 $(pub fn $name() -> ColorU {
-                    if is_dark() { $dark } else { $light }
+                    match PALETTE.read().unwrap_or_else(|poisoned| poisoned.into_inner()).as_ref() {
+                        Some(palette) => palette.$name,
+                        None => if is_dark() { $dark } else { $light },
+                    }
                 })*
             };
+        }
+
+        impl Palette {
+            /// Replaces the surfaces (sidebar, selection, dividers, menus) with shades of the
+            /// theme background; ink, status and accent colors keep the base palette's contrast.
+            fn tint_from(&mut self, background: ColorU, dark: bool) {
+                let lighter = |amount| mix(background, rgb(0xffffff), amount);
+                let darker = |amount| mix(background, rgb(0x000000), amount);
+                if dark {
+                    self.SIDEBAR = darker(0.18);
+                    self.ROW_FILL = lighter(0.02);
+                    self.QUIET_SELECTED = lighter(0.05);
+                    self.WHITE = lighter(0.12);
+                    self.DIVIDER = lighter(0.10);
+                    self.TRACK = lighter(0.12);
+                    self.LIFTED_BG = lighter(0.14);
+                    self.ICON_ON_FILL = darker(0.30);
+                    self.MENU_BG = ColorU { a: 245, ..lighter(0.08) };
+                } else {
+                    self.SIDEBAR = darker(0.07);
+                    self.ROW_FILL = lighter(0.60);
+                    self.QUIET_SELECTED = lighter(0.50);
+                    self.WHITE = lighter(0.90);
+                    self.DIVIDER = darker(0.06);
+                    self.TRACK = darker(0.10);
+                    self.LIFTED_BG = lighter(0.90);
+                    self.ICON_ON_FILL = lighter(0.90);
+                    self.MENU_BG = ColorU { a: 245, ..lighter(0.90) };
+                }
+                self.GLASS_TINT = ColorU { a: self.GLASS_TINT.a, ..self.SIDEBAR };
+            }
         }
 
         tokens! {
@@ -9079,6 +9201,8 @@ pub(super) mod sidebar {
             BADGE_TEXT: rgb(0x3a2300), rgb(0x3a2300);
             INSERT_LINE: rgb(0x626269), rgb(0xa1a1a6);
             SIDEBAR: rgb(0xe8e8eb), rgb(0x232326);
+            // The card behind a section's rows with `sidebar_row_style = "inset_group"`.
+            ROW_FILL: rgb(0xf6f6f8), rgb(0x2a2a2d);
             HOVER: black(13), white(15);
             CLOSE_BG: black(15), white(26);
             CLOSE_BG_HOVER: black(26), white(41);
@@ -9125,10 +9249,21 @@ pub(super) mod sidebar {
         if SIDEBAR_FONT.get().is_some() {
             return;
         }
+        let configured = TabSettings::as_ref(ctx)
+            .sidebar_font
+            .value()
+            .trim()
+            .to_owned();
         let loaded = warpui::fonts::Cache::handle(ctx).update(ctx, |cache, _| {
-            [".AppleSystemUIFont", "SF Pro Text", "Helvetica Neue"]
-                .into_iter()
-                .find_map(|name| cache.load_system_font(name).ok())
+            [
+                configured.as_str(),
+                ".AppleSystemUIFont",
+                "SF Pro Text",
+                "Helvetica Neue",
+            ]
+            .into_iter()
+            .filter(|name| !name.is_empty())
+            .find_map(|name| cache.load_system_font(name).ok())
         });
         if let Some(family) = loaded {
             let _ = SIDEBAR_FONT.set(family);
@@ -9615,23 +9750,143 @@ pub(super) mod sidebar {
         .finish()
     }
 
-    /// A row's line: the title, then the time, then the 16 px icon slot. Shared by the row and the
-    /// lifted copy that follows the pointer while it is dragged, so both put the text in one place.
+    /// A row's lines: the title and time, the optional branch and folder line under them, then the
+    /// 16 px icon slot centred beside both. Shared by the row and the lifted copy that follows the
+    /// pointer while it is dragged, so both put the text in one place.
     fn row_line(
         title: Box<dyn Element>,
         time: Option<Box<dyn Element>>,
+        subtitle: Option<Box<dyn Element>>,
         icon_slot: Box<dyn Element>,
     ) -> Box<dyn Element> {
-        let mut row = Flex::row()
+        let mut first_line = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(8.)
             .with_child(Expanded::new(1., title).finish());
         if let Some(time) = time {
-            row.add_child(time);
+            first_line.add_child(time);
         }
-        row.add_child(icon_slot);
-        row.finish()
+        let text_block = match subtitle {
+            Some(subtitle) => Flex::column()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_spacing(3.)
+                .with_child(first_line.finish())
+                .with_child(subtitle)
+                .finish(),
+            None => first_line.finish(),
+        };
+        // Centred in the row's fixed height; without it a two-line row hugs the top edge.
+        Align::new(
+            Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(8.)
+                .with_child(Expanded::new(1., text_block).finish())
+                .with_child(icon_slot)
+                .finish(),
+        )
+        .finish()
+    }
+
+    /// A section's rows as the `sidebar_row_style` setting lays them out: as given, with a line
+    /// between them, or set in one rounded card with a line between them.
+    pub(super) fn section_rows(rows: Vec<Box<dyn Element>>, app: &AppContext) -> Box<dyn Element> {
+        let settings = TabSettings::as_ref(app);
+        let style = *settings.sidebar_row_style.value();
+        let gap = settings.sidebar_row_gap.value().clamp(0., 8.);
+        let mut column = Flex::column()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(gap);
+        for (index, row) in rows.into_iter().enumerate() {
+            if index > 0 && style != SidebarRowStyle::Plain {
+                column.add_child(row_divider());
+            }
+            column.add_child(row);
+        }
+        if style != SidebarRowStyle::InsetGroup {
+            return column.finish();
+        }
+        Container::new(column.finish())
+            .with_uniform_padding(4.)
+            .with_background_color(colors::ROW_FILL())
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(ROW_RADIUS + 4.)))
+            .finish()
+    }
+
+    /// A hairline between two rows, inset to the row text.
+    fn row_divider() -> Box<dyn Element> {
+        Container::new(
+            ConstrainedBox::new(
+                Container::new(Empty::new().finish())
+                    .with_background_color(colors::DIVIDER())
+                    .finish(),
+            )
+            .with_height(1.)
+            .finish(),
+        )
+        .with_padding(Padding::uniform(0.).with_left(12.).with_right(10.))
+        .finish()
+    }
+
+    /// Row height for the `sidebar_subtitle` setting: one line, or two.
+    pub(in crate::workspace::view) fn row_height(app: &AppContext) -> f32 {
+        if *TabSettings::as_ref(app).sidebar_subtitle.value() == SidebarSubtitle::None {
+            ROW_HEIGHT
+        } else {
+            ROW_HEIGHT_TWO_LINES
+        }
+    }
+
+    fn title_size(app: &AppContext) -> f32 {
+        TabSettings::as_ref(app)
+            .sidebar_title_size
+            .value()
+            .clamp(10., 20.)
+    }
+
+    /// The `sidebar_subtitle` line for a terminal: "branch · ~/folder", either part dropped
+    /// when missing, `None` when the setting is off or there is nothing to show.
+    fn terminal_subtitle(terminal_view: &TerminalView, app: &AppContext) -> Option<String> {
+        let mode = *TabSettings::as_ref(app).sidebar_subtitle.value();
+        if mode == SidebarSubtitle::None {
+            return None;
+        }
+        let branch = (mode == SidebarSubtitle::BranchAndDirectory)
+            .then(|| terminal_view.current_git_branch(app))
+            .flatten();
+        let directory = resolved_terminal_working_directory(terminal_view, app)
+            .map(|directory| tilde_path(&directory));
+        let line = [branch, directory]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
+        (!line.is_empty()).then_some(line)
+    }
+
+    /// The subtitle of a tab's first terminal, for the dragged copy of a tab row.
+    pub(in crate::workspace::view) fn tab_subtitle(
+        tab: &TabData,
+        app: &AppContext,
+    ) -> Option<String> {
+        let pane_group = tab.pane_group.as_ref(app);
+        pane_group
+            .visible_pane_ids()
+            .into_iter()
+            .find_map(|pane_id| {
+                let TypedPane::Terminal(terminal_pane) = pane_group.resolve_pane_type(pane_id, app)
+                else {
+                    return None;
+                };
+                terminal_subtitle(terminal_pane.terminal_view(app).as_ref(app), app)
+            })
+    }
+
+    fn row_subtitle_text(subtitle: String, color: ColorU, app: &AppContext) -> Box<dyn Element> {
+        text(subtitle, 11.5, color, Weight::Normal, app).finish()
     }
 
     fn row_title_text(
@@ -9645,7 +9900,27 @@ pub(super) mod sidebar {
         } else {
             Weight::Normal
         };
-        text(title, ROW_TITLE_SIZE, ink, weight, app).finish()
+        text(
+            without_agent_glyph(&title),
+            title_size(app),
+            ink,
+            weight,
+            app,
+        )
+        .finish()
+    }
+
+    /// Drops the status glyph Claude Code puts before its terminal title (`✳` idle, `✢ ✶ ✻ ✽ ·`
+    /// or braille while working): the row's status icon already says the same.
+    fn without_agent_glyph(title: &str) -> &str {
+        let rest = title.trim_start_matches(|c: char| {
+            matches!(c, '✳' | '✢' | '✶' | '✻' | '✽' | '·') || ('\u{2800}'..='\u{28ff}').contains(&c)
+        });
+        if rest.len() == title.len() {
+            title
+        } else {
+            rest.trim_start()
+        }
     }
 
     fn row_time_text(time: String, color: ColorU, app: &AppContext) -> Box<dyn Element> {
@@ -9731,6 +10006,13 @@ pub(super) mod sidebar {
         let title = row_title_text(title_string, scale_alpha(ink, fade), unread, app);
         let time =
             time_string.map(|time| row_time_text(time, scale_alpha(colors::SUB(), fade), app));
+        let subtitle = match &props.typed {
+            TypedPane::Terminal(terminal_pane) => {
+                terminal_subtitle(terminal_pane.terminal_view(app).as_ref(app), app)
+            }
+            _ => None,
+        }
+        .map(|subtitle| row_subtitle_text(subtitle, scale_alpha(colors::SUB(), fade), app));
 
         let hovered = props
             .mouse_state
@@ -9763,13 +10045,14 @@ pub(super) mod sidebar {
                 }
             }
         };
-        row_line(title, time, icon_slot)
+        row_line(title, time, subtitle, icon_slot)
     }
 
     /// The lifted row that follows the pointer while a row is dragged: a full copy of the row at
     /// its size, so the drag offset maps 1:1 and the text stays where it was under the pointer.
     pub(super) fn drag_preview(
         title: String,
+        subtitle: Option<String>,
         (status, terminal_view_id): (RowStatus, Option<EntityId>),
         unread: bool,
         app: &AppContext,
@@ -9783,6 +10066,7 @@ pub(super) mod sidebar {
             row_title_text(title, ink, unread, app),
             status_time(status, terminal_view_id, app)
                 .map(|time| row_time_text(time, colors::SUB(), app)),
+            subtitle.map(|subtitle| row_subtitle_text(subtitle, colors::SUB(), app)),
             status_icon(status, unread, None),
         );
         ConstrainedBox::new(
@@ -9795,7 +10079,7 @@ pub(super) mod sidebar {
                 .finish(),
         )
         .with_width(SIDEBAR_WIDTH - 2. * LIST_SIDE_PADDING)
-        .with_height(ROW_HEIGHT)
+        .with_height(row_height(app))
         .finish()
     }
 
@@ -9894,7 +10178,7 @@ pub(super) mod sidebar {
             display_group_name(name),
             SECTION_TITLE_SIZE,
             colors::SECTION_NAME(),
-            Weight::Semibold,
+            Weight::Bold,
             app,
         )
         .finish()

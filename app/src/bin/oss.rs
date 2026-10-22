@@ -22,7 +22,7 @@ fn main() -> Result<()> {
             // Harp's updater reads GitHub releases (see autoupdate::mac); this turns on the
             // update menu items that offer the restart.
             autoupdate_config: Some(AutoupdateConfig {
-                releases_base_url: "https://github.com/dominikmartn/harp/releases".into(),
+                releases_base_url: "https://github.com/pravnyadv/harp/releases".into(),
                 show_autoupdate_menu_items: true,
             }),
             mcp_static_config: None,

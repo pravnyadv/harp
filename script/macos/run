@@ -104,7 +104,8 @@ rm -rf "$WARP_APP_PATH"
 
 pushd app > /dev/null
 echo "Bundling app (bin: $WARP_BIN_NAME)..."
-cargo bundle --bin "$WARP_BIN_NAME" --features "$FEATURES" $PARAMS
+# HARP_BUNDLE_FORMAT=osx builds only the .app, skipping the DMG that local runs never use.
+cargo bundle --bin "$WARP_BIN_NAME" --features "$FEATURES" $PARAMS ${HARP_BUNDLE_FORMAT:+--format "$HARP_BUNDLE_FORMAT"}
 echo "Successfully bundled..."
 popd > /dev/null
 

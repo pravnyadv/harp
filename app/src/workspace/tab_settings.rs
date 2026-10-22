@@ -456,6 +456,186 @@ settings::macros::implement_setting_for_enum!(
     description: "Subtitle shown on compact vertical tabs.",
 );
 
+#[derive(
+    Default,
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    PartialEq,
+    Eq,
+    Copy,
+    Clone,
+    schemars::JsonSchema,
+    settings_value::SettingsValue,
+)]
+#[schemars(
+    description = "Where the framed sidebar's surface colors come from.",
+    rename_all = "snake_case"
+)]
+pub enum SidebarPalette {
+    /// Harp's own light or dark greys, picked by whether the theme is dark.
+    #[default]
+    System,
+    /// Shades of the terminal theme's background, so the sidebar matches the theme.
+    Theme,
+}
+
+settings::macros::implement_setting_for_enum!(
+    SidebarPalette,
+    TabSettings,
+    SupportedPlatforms::ALL,
+    SyncToCloud::Never,
+    surface: settings::SettingSurfaces::GUI,
+    private: false,
+    toml_path: "appearance.vertical_tabs.sidebar_palette",
+    description: "Where the framed sidebar's surface colors come from: \"system\" (Harp's light or dark greys) or \"theme\" (shades of the terminal theme's background).",
+);
+
+#[derive(
+    Default,
+    Debug,
+    Clone,
+    serde::Serialize,
+    serde::Deserialize,
+    PartialEq,
+    Eq,
+    schemars::JsonSchema,
+    settings_value::SettingsValue,
+)]
+#[schemars(
+    description = "Framed sidebar color overrides: token name (e.g. sidebar, needs_text) to a #rrggbb or #rrggbbaa color."
+)]
+pub struct SidebarColorOverrides(pub(crate) HashMap<String, String>);
+
+settings::macros::implement_setting_for_enum!(
+    SidebarColorOverrides,
+    TabSettings,
+    SupportedPlatforms::ALL,
+    SyncToCloud::Never,
+    surface: settings::SettingSurfaces::GUI,
+    private: false,
+    toml_path: "appearance.vertical_tabs.sidebar_colors",
+    max_table_depth: 0,
+    description: "Framed sidebar color overrides, applied on top of the palette: token name (e.g. sidebar, needs_text) to a #rrggbb or #rrggbbaa color. Unknown names and bad colors are ignored.",
+);
+
+#[derive(
+    Default,
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    PartialEq,
+    Eq,
+    Copy,
+    Clone,
+    schemars::JsonSchema,
+    settings_value::SettingsValue,
+)]
+#[schemars(
+    description = "Second line under each framed sidebar row's title.",
+    rename_all = "snake_case"
+)]
+pub enum SidebarSubtitle {
+    /// One line: title, time and status only.
+    #[default]
+    None,
+    /// The working directory.
+    Directory,
+    /// The git branch, then the working directory.
+    BranchAndDirectory,
+}
+
+settings::macros::implement_setting_for_enum!(
+    SidebarSubtitle,
+    TabSettings,
+    SupportedPlatforms::ALL,
+    SyncToCloud::Never,
+    surface: settings::SettingSurfaces::GUI,
+    private: false,
+    toml_path: "appearance.vertical_tabs.sidebar_subtitle",
+    description: "Second line under each framed sidebar row's title: \"none\", \"directory\" or \"branch_and_directory\".",
+);
+
+#[derive(
+    Default,
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    PartialEq,
+    Eq,
+    Copy,
+    Clone,
+    schemars::JsonSchema,
+    settings_value::SettingsValue,
+)]
+#[schemars(
+    description = "How ungrouped tabs are put into groups automatically.",
+    rename_all = "snake_case"
+)]
+pub enum AutoGroupTabs {
+    /// Groups are only ever made by hand.
+    #[default]
+    Off,
+    /// An ungrouped tab joins the group named after its project (its git repo, else its folder).
+    Project,
+}
+
+settings::macros::implement_setting_for_enum!(
+    AutoGroupTabs,
+    TabSettings,
+    SupportedPlatforms::ALL,
+    SyncToCloud::Never,
+    surface: settings::SettingSurfaces::GUI,
+    private: false,
+    toml_path: "appearance.vertical_tabs.auto_group",
+    description: "\"project\" puts each ungrouped tab into a group named after its git repo (worktrees under a worktrees/<repo>/ folder count as <repo>), or its folder, creating the group when needed. Tabs already in a group are left alone. \"off\" groups only by hand.",
+);
+
+#[derive(
+    Default,
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    PartialEq,
+    Eq,
+    Copy,
+    Clone,
+    schemars::JsonSchema,
+    settings_value::SettingsValue,
+)]
+#[schemars(
+    description = "How the framed sidebar separates the rows of a section.",
+    rename_all = "snake_case"
+)]
+pub enum SidebarRowStyle {
+    /// Rows sit on the sidebar; only the selected one has a fill.
+    #[default]
+    Plain,
+    /// A thin line between rows.
+    Dividers,
+    /// Each section's rows share one rounded card, with a thin line between rows.
+    InsetGroup,
+}
+
+settings::macros::implement_setting_for_enum!(
+    SidebarRowStyle,
+    TabSettings,
+    SupportedPlatforms::ALL,
+    SyncToCloud::Never,
+    surface: settings::SettingSurfaces::GUI,
+    private: false,
+    toml_path: "appearance.vertical_tabs.sidebar_row_style",
+    description: "How the framed sidebar separates rows: \"plain\", \"dividers\" or \"inset_group\" (one rounded card per section).",
+);
+
+impl SidebarColorOverrides {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.0
+            .iter()
+            .map(|(name, color)| (name.as_str(), color.as_str()))
+    }
+}
+
 define_settings_group!(TabSettings, settings: [
     show_indicators: ShowIndicatorsButton {
         type: bool,
@@ -585,6 +765,66 @@ define_settings_group!(TabSettings, settings: [
         storage_key: "VerticalTabsFullTabMenu",
         toml_path: "appearance.vertical_tabs.full_tab_menu",
         description: "Whether the vertical tabs' tab and group right-click menus show every entry (pin, share, copy, move, close others, save as launch configuration, colors) or only rename, move to group, read/unread, active/inactive and close.",
+    },
+    sidebar_palette: SidebarPalette,
+    sidebar_colors: SidebarColorOverrides,
+    sidebar_glass: SidebarGlass {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        storage_key: "SidebarGlass",
+        toml_path: "appearance.vertical_tabs.sidebar_glass",
+        description: "Whether the framed sidebar and the gaps around the card are frosted and see-through. Off paints them solid in the sidebar color.",
+    },
+    sidebar_subtitle: SidebarSubtitle,
+    sidebar_row_style: SidebarRowStyle,
+    sidebar_row_gap: SidebarRowGap {
+        type: f32,
+        default: 1.,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        storage_key: "SidebarRowGap",
+        toml_path: "appearance.vertical_tabs.sidebar_row_gap",
+        description: "Space between framed sidebar rows, in points (0 to 8). With dividers it sits on each side of the line, so neighbouring fills never touch.",
+    },
+    auto_group_tabs: AutoGroupTabs,
+    framed_card_padding: FramedCardPadding {
+        type: f32,
+        default: 32.,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        storage_key: "FramedCardPadding",
+        toml_path: "appearance.vertical_tabs.card_padding",
+        description: "Space left of the terminal inside the framed card, in points (0 to 64). The terminal adds its own padding on top.",
+    },
+    sidebar_title_size: SidebarTitleSize {
+        type: f32,
+        default: 13.,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        storage_key: "SidebarTitleSize",
+        toml_path: "appearance.vertical_tabs.sidebar_title_size",
+        description: "Font size of the framed sidebar's row titles, in points (10 to 20).",
+    },
+    sidebar_font: SidebarFont {
+        type: String,
+        default: String::new(),
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        storage_key: "SidebarFont",
+        toml_path: "appearance.vertical_tabs.sidebar_font",
+        description: "Font family for the framed sidebar. Empty uses the macOS system font. Applies after a restart.",
     },
     // Optional integrations of the framed sidebar; see README.md. Only the limit rings are on by
     // default (Harp: they read the agents' own files, so a fresh install shows them); the rest
