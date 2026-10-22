@@ -9909,15 +9909,29 @@ pub(super) mod sidebar {
         }
     }
 
-    /// A handoff child's subtitle says which session started it: `from discover-58 in ~/Dev/x`.
+    /// A handoff child's subtitle says which session started it: `from discover-58`, plus
+    /// `in ~/Dev/x` only when it works in a different folder than its parent did.
     fn with_parent_name(
         subtitle: String,
         terminal_view_id: Option<EntityId>,
         app: &AppContext,
     ) -> String {
-        claude_session_id(terminal_view_id, app)
+        let Some(parent) = claude_session_id(terminal_view_id, app)
             .and_then(|id| HandoffFamily::with(|family| family.parent_of.get(&id).cloned()))
-            .map_or(subtitle.clone(), |parent| format!("from {parent} in {subtitle}"))
+        else {
+            return subtitle;
+        };
+        // The subtitle ends with the folder, after the branch in `branch_and_directory` mode.
+        let without_parent_folder = parent
+            .folder
+            .map(|folder| tilde_path(&folder))
+            .and_then(|folder| subtitle.strip_suffix(folder.as_str()))
+            .map(|rest| rest.trim_end_matches(" · ").to_owned());
+        match without_parent_folder {
+            Some(branch) if branch.is_empty() => format!("from {}", parent.name),
+            Some(branch) => format!("from {} · {branch}", parent.name),
+            None => format!("from {} in {subtitle}", parent.name),
+        }
     }
 
     fn claude_session_id(terminal_view_id: Option<EntityId>, app: &AppContext) -> Option<String> {
@@ -9930,12 +9944,19 @@ pub(super) mod sidebar {
 
     /// Who handed work to whom, as `~/.claude/bin/handoff` records it under `~/.claude/handoff`:
     /// `parents/<session id>` (empty) per parent, `children/<session id>` holding the parent's
-    /// name, then its session id, per child. Rows render often, so the folders are re-read at most
+    /// name, session id and folder, one per line, per child. Rows render often, so the folders are re-read at most
     /// every two seconds.
     #[derive(Default)]
     pub(in crate::workspace::view) struct HandoffFamily {
         parents: HashSet<String>,
-        parent_of: HashMap<String, String>,
+        parent_of: HashMap<String, Parent>,
+    }
+
+    /// A child's parent: its session name and the folder it was in when it handed off.
+    #[derive(Clone)]
+    struct Parent {
+        name: String,
+        folder: Option<String>,
     }
 
     impl HandoffFamily {
@@ -9968,8 +9989,10 @@ pub(super) mod sidebar {
                 parent_of: files("children")
                     .filter_map(|(id, path)| {
                         let text = std::fs::read_to_string(path).ok()?;
-                        let parent = text.lines().next()?.trim().to_owned();
-                        (!parent.is_empty()).then_some((id, parent))
+                        let mut lines = text.lines().map(str::trim);
+                        let name = lines.next().filter(|name| !name.is_empty())?.to_owned();
+                        let folder = lines.nth(1).filter(|folder| !folder.is_empty());
+                        Some((id, Parent { name, folder: folder.map(str::to_owned) }))
                     })
                     .collect(),
             }
