@@ -32,21 +32,57 @@ esac
 hash=$(printf '%s' "$parent" | cksum | cut -d' ' -f1)
 color=${COLORS[$((hash % ${#COLORS[@]}))]}
 
-mkdir -p "$QUEUE"
+# The child's session id is picked here so Harp can show who started whom: under
+# ~/.claude/handoff, parents/<session id> marks a parent and children/<session id> holds the
+# parent's name, then its session id (so Harp can open the child's tab next to the parent's).
+session_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+FAMILY="$HOME/.claude/handoff"
+mkdir -p "$QUEUE" "$FAMILY/parents" "$FAMILY/children"
+[[ -n ${CLAUDE_CODE_SESSION_ID:-} ]] && touch "$FAMILY/parents/$CLAUDE_CODE_SESSION_ID"
+printf '%s\n%s\n' "$parent" "${CLAUDE_CODE_SESSION_ID:-}" > "$FAMILY/children/$session_id"
+
 job="$QUEUE/$(date +%s)-$$-$name.json"
-jq -n --arg name "$name" --arg parent "$parent" --arg mode "$mode" --arg cwd "$cwd" \
-  --arg prompt "$prompt"$'\n\n'"$rules" '{name:$name,parent:$parent,mode:$mode,cwd:$cwd,prompt:$prompt}' > "$job.tmp"
+jq -n --arg name "$name" --arg parent "$parent" --arg mode "$mode" --arg cwd "$cwd" --arg session_id "$session_id" \
+  --arg prompt "$prompt"$'\n\n'"$rules" '{name:$name,parent:$parent,mode:$mode,cwd:$cwd,session_id:$session_id,prompt:$prompt}' > "$job.tmp"
 mv "$job.tmp" "$job"
 
-if pgrep -qf 'Harp.app/Contents/MacOS'; then
-  open "harp://tab_config/handoff-$color"
+# A one-off tab config (handoff-open deletes it) starts the tab's shell in the task folder, so
+# the sidebar shows that path. $1 is harp or warp.
+open_tab() {
+  local config="$HOME/.$1/tab_configs/handoff-$name.toml"
+  mkdir -p "${config%/*}"
+  cat > "$config" <<EOF
+name = "Handoff $name"
+color = "$color"
+
+[[panes]]
+id = "main"
+type = "terminal"
+directory = "$cwd"
+commands = ["$HOME/.claude/bin/handoff-open"]
+EOF
+  open "$1://tab_config/handoff-$name"
+}
+
+# A session inside Harp or Warp knows from its own environment; pgrep covers other terminals
+# (it sees no processes from inside a sandboxed Claude shell).
+app=""
+case "${__CFBundleIdentifier:-}" in
+  com.dominikmartn.Harp) app=harp ;;
+  dev.warp.*) app=warp ;;
+esac
+[[ -z $app ]] && pgrep -qf 'Harp.app/Contents/MacOS' && app=harp
+[[ -z $app ]] && pgrep -qf 'Warp.app/Contents/MacOS' && app=warp
+
+if [[ $app == harp ]]; then
+  open_tab harp
   echo "handoff: opening \"$name\" in a new Harp tab ($color)"
-elif pgrep -qf 'Warp.app/Contents/MacOS'; then
-  open "warp://tab_config/handoff-$color"
+elif [[ $app == warp ]]; then
+  open_tab warp
   echo "handoff: opening \"$name\" in a new Warp tab ($color)"
 else
   # No Harp or Warp window to open a tab in: start it in the background so the work begins anyway.
   rm "$job"
-  (cd "$cwd" && claude --bg -n "$name" "$prompt"$'\n\n'"$rules")
+  (cd "$cwd" && claude --bg --session-id "$session_id" -n "$name" "$prompt"$'\n\n'"$rules")
   echo "handoff: neither Harp nor Warp is running, started \"$name\" in the background (claude attach $name)"
 fi

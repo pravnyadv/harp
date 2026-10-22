@@ -73,12 +73,8 @@ What each piece does:
 | Piece | Where | Effect |
 |---|---|---|
 | `/handoff` skill | `~/.claude/skills/handoff/SKILL.md` | "hand this off" starts a separate Claude session for a task, in its own tab. |
-| `handoff` | `~/.claude/bin/handoff` | Queues the task, then opens a `harp://` tab (Warp if Harp is closed, a background session if neither runs). Children of one session share a tab color. |
+| `handoff` | `~/.claude/bin/handoff` | Queues the task, then opens a `harp://` tab in the task folder through a one-off tab config (Warp if Harp is closed, a background session if neither runs). Children of one session share a tab color. It records who started whom under `~/.claude/handoff/parents` and `children`, which Harp's sidebar reads: the parent row gets a `◉`, a child row reads `from <parent> in <folder>`. |
 | `handoff-open` | `~/.claude/bin/handoff-open` | Runs in the new tab: claims the task, titles the tab `⎿ <name>`, starts `claude -n <name>`. |
-| Tab configs | `~/.harp/tab_configs/`, `~/.warp/tab_configs/` | The six colored tab templates the links above open. |
 | Warp plugin | Claude Code plugins | Sends each session's status to Harp's sidebar. |
 | No sound hooks | `~/.claude/settings.json` | Silent Claude notifications. |
 | Tab titles | `~/.zshrc` | Shells show their folder name. |
-
-`/handoff` in a Harp tab is untested: the script and the `harp://tab_config` link are the same as
-the Warp path that was dry-run tested, but no real Harp tab has been opened by it yet.
