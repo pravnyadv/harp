@@ -49,14 +49,13 @@ prompt was customized earlier, open the prompt editor and pick "Restore default"
 
 ## Claude Code side
 
-These live outside Harp, in `~/.claude` and `~/.zshrc`. Open Claude Code in this repo on the new
-Mac and paste the prompt below; it does each step and reports back.
+These live outside Harp, in `~/.claude`, `~/.claude.json` and `~/.zshrc`. Open Claude Code in this
+repo on the new Mac and paste the prompt below; it does each step and reports back.
 
 ```text
 Set up my Claude Code side from my-setup/README.md in this repo. Do each step, show me what changed,
 and back up any file before editing it:
-1. Run ./my-setup/claude/install.sh (installs the /handoff skill, its scripts, and the Harp and
-   Warp tab configs).
+1. Run ./my-setup/claude/install.sh (installs the /handoff skill and its two scripts).
 2. Install Warp's Claude Code plugin, which Harp uses for each tab's working / needs-you / done
    status: `claude plugin marketplace add warpdotdev/claude-code-warp`, then
    `claude plugin install warp@claude-code-warp`. Tell me to run /reload-plugins in open sessions.
@@ -66,6 +65,24 @@ and back up any file before editing it:
    titles show the folder name instead of user@host (skip if oh-my-zsh is not used):
      ZSH_THEME_TERM_TITLE_IDLE="%1~"
      ZSH_THEME_TERM_TAB_TITLE_IDLE="%1~"
+5. Make new shells start fast (Harp shows "Starting zsh" until ~/.zshrc finishes). First time
+   `zsh -i -c exit` three times with /usr/bin/time and note the numbers. Then:
+   a. If ~/.zshrc loads nvm with `\. "$NVM_DIR/nvm.sh"`, replace the NVM_DIR export and the
+      nvm.sh / bash_completion lines with my-setup/shell/nvm-lazy.zsh, verbatim.
+   b. If ~/.zshrc runs `brew ls --versions` at startup to list PHP versions into
+      `installedPhpVersions`, replace that one line with my-setup/shell/php-versions.zsh, and
+      check `echo $installedPhpVersions` gives the same list as before.
+   c. If oh-my-zsh is used: run `omz update` once, then put my-setup/shell/omz-update.zsh above
+      the `source $ZSH/oh-my-zsh.sh` line (replacing any active `zstyle ':omz:update'` lines).
+   d. For anything else slow, profile with `PS4='+%D{%s.%6.} %N:%i> ' zsh -i -x -c exit` and show
+      me the slowest lines before changing them.
+   Time it again and show me before and after. Check `node -v` and `nvm current` still work.
+6. In ~/.claude/settings.json, time each SessionStart hook (pipe it a small JSON like
+   {"session_id":"x","cwd":"<a repo>","source":"startup"}). For any over ~300ms, such as
+   ~/.claude/hooks/mr-health-after-push.sh, add "async": true to that hook entry: Claude's first
+   reply otherwise waits for it.
+7. Run `claude mcp list`. Show me any server that fails to connect (on the office laptop the
+   sonarqube Docker server failed in every session) and remove it only if I agree.
 ```
 
 What each piece does:
@@ -73,8 +90,10 @@ What each piece does:
 | Piece | Where | Effect |
 |---|---|---|
 | `/handoff` skill | `~/.claude/skills/handoff/SKILL.md` | "hand this off" starts a separate Claude session for a task, in its own tab. |
-| `handoff` | `~/.claude/bin/handoff` | Queues the task, then opens a `harp://` tab in the task folder through a one-off tab config (Warp if Harp is closed, a background session if neither runs). Children of one session share a tab color. It records who started whom under `~/.claude/handoff/parents` and `children`, which Harp's sidebar reads: the parent row gets a `◉`, a child row reads `from <parent> in <folder>`. |
+| `handoff` | `~/.claude/bin/handoff` | Queues the task, then opens a `harp://` tab in the task folder through a one-off tab config (Warp if Harp is closed, a background session if neither runs). Children of one session share a tab color. It records who started whom under `~/.claude/handoff/parents` and `children`, which Harp's sidebar reads: the parent row gets a `◉`, a child row reads `from <parent>` (plus its folder when that differs), and a new child's tab opens right after its parent's. |
 | `handoff-open` | `~/.claude/bin/handoff-open` | Runs in the new tab: claims the task, titles the tab `⎿ <name>`, starts `claude -n <name>`. |
 | Warp plugin | Claude Code plugins | Sends each session's status to Harp's sidebar. |
 | No sound hooks | `~/.claude/settings.json` | Silent Claude notifications. |
 | Tab titles | `~/.zshrc` | Shells show their folder name. |
+| Fast shells | `~/.zshrc`, `my-setup/shell/` | nvm loads on first use, PHP versions come from the Cellar instead of `brew`, oh-my-zsh updates daily in the background. On the office laptop a shell went from 0.85s to 0.05s. |
+| Async hooks | `~/.claude/settings.json` | Slow SessionStart hooks no longer hold up Claude's first reply. |
