@@ -1,5 +1,6 @@
 pub mod event;
 pub mod listener;
+pub mod resume_store;
 #[cfg(not(target_family = "wasm"))]
 pub(crate) mod plugin_manager;
 

@@ -9914,7 +9914,9 @@ pub(super) mod sidebar {
     /// or braille while working): the row's status icon already says the same.
     fn without_agent_glyph(title: &str) -> &str {
         let rest = title.trim_start_matches(|c: char| {
-            matches!(c, '✳' | '✢' | '✶' | '✻' | '✽' | '·') || ('\u{2800}'..='\u{28ff}').contains(&c)
+            matches!(c, '✳' | '✢' | '✶' | '✻' | '✽' | '·')
+                || ('\u{2800}'..='\u{28ff}').contains(&c)
+                || ('\u{25d0}'..='\u{25d3}').contains(&c)
         });
         if rest.len() == title.len() {
             title

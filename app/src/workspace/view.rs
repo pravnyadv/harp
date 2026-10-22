@@ -4328,6 +4328,7 @@ impl Workspace {
                             .filter(|group_id| self.tab_groups.contains_key(group_id));
 
                         let pane_group = self.tabs[tab_index].pane_group.clone();
+                        self.start_restored_agent_resumes(tab_index == active_tab_index, ctx);
 
                         if let Some(left_panel_snapshot) = &saved_tab.left_panel {
                             self.restore_left_panel_for_tab(&pane_group, left_panel_snapshot, ctx);
@@ -22230,6 +22231,25 @@ impl Workspace {
             }
         }
         ctx.dispatch_global_action("workspace:save_app", ());
+    }
+
+    /// Harp: runs the Claude resumes queued while restoring a tab. The tab in view starts at once;
+    /// the rest wait a moment so its Claude gets the machine first, and are ready before a click.
+    fn start_restored_agent_resumes(&mut self, in_view: bool, ctx: &mut ViewContext<Self>) {
+        const BACKGROUND_RESUME_DELAY: Duration = Duration::from_millis(1500);
+        for (terminal_view, command) in crate::pane_group::take_pending_agent_resumes() {
+            if in_view {
+                terminal_view.update(ctx, |view, ctx| view.execute_command_or_set_pending(&command, ctx));
+            } else {
+                ctx.spawn(
+                    warpui::r#async::Timer::after(BACKGROUND_RESUME_DELAY),
+                    move |_, _, ctx| {
+                        terminal_view
+                            .update(ctx, |view, ctx| view.execute_command_or_set_pending(&command, ctx));
+                    },
+                );
+            }
+        }
     }
 
     /// Repaints the framed sidebar every 30 seconds, so "waiting 4m" labels keep counting while
