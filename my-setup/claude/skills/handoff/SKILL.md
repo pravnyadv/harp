@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: Hand a task to a brand-new Claude Code session that opens in its own Harp (or Warp) tab, so the user can watch it and talk to it while this session keeps going. Use when the user says /handoff, "hand this off", "run this in a new session" or "spin up a session for this". Not for subagents: a subagent shares this session; a handoff is a separate, interactive session.
+description: Hand a task to a brand-new Claude Code session that opens in its own Harp (or Warp) tab, so the user can watch it and talk to it while this session keeps going. Use when the user says /handoff, "hand this off", "run this in a new session" or "spin up a session for this", and on your own, without asking, when a separable piece of work needs its own conversation (several rounds of user input or review, back-and-forth messages with this session) or is big enough to crowd this context. Not for one-shot work whose result this session needs next; that is a subagent.
 ---
 
 # Handoff
