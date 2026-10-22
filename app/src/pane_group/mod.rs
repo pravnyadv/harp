@@ -123,6 +123,7 @@ use crate::shell_indicator::ShellIndicatorType;
 use crate::terminal::available_shells::{AvailableShell, AvailableShells};
 #[cfg(not(target_family = "wasm"))]
 use crate::terminal::cli_agent_sessions::plugin_manager::PluginModalKind;
+use crate::terminal::cli_agent_sessions::resume_store;
 use crate::terminal::general_settings::{GeneralSettings, GeneralSettingsChangedEvent};
 #[cfg(feature = "local_tty")]
 use crate::terminal::local_tty::TerminalManager as LocalTtyTerminalManager;
@@ -867,6 +868,17 @@ pub enum PaneDragDropLocation {
     TabBar(TabBarLocation),
     PaneGroup(PaneId),
     Other,
+}
+
+thread_local! {
+    /// Harp: `claude --resume` commands for terminals restored since the last take, in restore order.
+    static PENDING_AGENT_RESUMES: RefCell<Vec<(ViewHandle<TerminalView>, String)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Harp: drains the agent resumes queued by the panes restored since the last call.
+pub(crate) fn take_pending_agent_resumes() -> Vec<(ViewHandle<TerminalView>, String)> {
+    PENDING_AGENT_RESUMES.take()
 }
 
 pub struct PaneGroup {
@@ -1705,6 +1717,15 @@ impl PaneGroup {
                     ctx,
                 );
 
+                // Harp: queue a resume of the Claude Code session that was live here when Harp last
+                // saved. The workspace starts the tab in view first; see `take_pending_agent_resumes`.
+                if *GeneralSettings::as_ref(ctx).resume_agent_sessions.value()
+                    && let Some(session_id) = resume_store::session_for(&uuid.0)
+                {
+                    PENDING_AGENT_RESUMES.with_borrow_mut(|pending| {
+                        pending.push((terminal_view.clone(), format!("claude --resume {session_id}")))
+                    });
+                }
                 let terminal_view_id = terminal_view.id();
 
                 let pane_data = TerminalPane::new(

@@ -59,7 +59,8 @@ use crate::server::server_api::ServerApiProvider;
 use crate::server::team_scope::RequestTeamScope;
 use crate::server::telemetry::CloudAgentShellRecoveryFailureClass;
 use crate::session_management::SessionNavigationData;
-use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
+use crate::terminal::CLIAgent;
+use crate::terminal::cli_agent_sessions::{CLIAgentSessionsModel, resume_store};
 use crate::terminal::general_settings::GeneralSettings;
 #[cfg(not(target_family = "wasm"))]
 use crate::terminal::shared_session::SharedSessionSource;
@@ -449,7 +450,14 @@ impl PaneContent for TerminalPane {
     }
 
     fn snapshot(&self, app: &AppContext) -> LeafContents {
-        let view = self.terminal_view(app).as_ref(app);
+        let view_handle = self.terminal_view(app);
+        // Harp: keep `claude --resume` able to bring this pane's live Claude session back.
+        let live_claude_session = CLIAgentSessionsModel::as_ref(app)
+            .session(view_handle.id())
+            .filter(|session| session.agent == CLIAgent::Claude)
+            .and_then(|session| session.session_context.session_id.as_deref());
+        resume_store::record(&self.uuid, live_claude_session);
+        let view = view_handle.as_ref(app);
         let is_active = view.is_active_session(app);
 
         // Capture the current input_config from the AI input model

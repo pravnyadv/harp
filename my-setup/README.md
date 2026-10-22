@@ -41,6 +41,11 @@ All live in `~/.harp/settings.toml` and apply on save, except `sidebar_font`.
 | `appearance.blocks.shade_restored_blocks` | `false` | Output from the previous session looks like new output. |
 | `appearance.blocks.selected_block_fill` | `6` | Faint tint on a selected block (Harp default 25; 0 keeps only the border). |
 | `general.snackbar_enabled` | `true` | Keeps the command pinned at the top while scrolling long output. |
+| `general.resume_agent_sessions` | `true` | Tabs that had a live Claude session when Harp quit run `claude --resume <id>` on restore. The ids are kept in `~/.harp/agent_sessions.json`. Needs the Warp plugin below. |
+
+The default Warp-mode prompt also changed: repository name, branch, branch status, Node version
+and PHP version (only in a Composer project) sit before the path, like the Spaceship prompt. If a
+prompt was customized earlier, open the prompt editor and pick "Restore default" to see it.
 
 ## Claude Code side
 

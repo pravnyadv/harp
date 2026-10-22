@@ -9964,24 +9964,8 @@ impl TerminalView {
     }
 
     /// Writes a shared session viewer's bytes to the pty.
-    ///
-    /// A lone Ctrl-C byte that is actually forwarded to the PTY is
-    /// additionally observed by `CLIAgentSessionsModel` so that an interrupt
-    /// which silently kills a third-party harness turn (no plugin hook fires
-    /// on user interrupt) can still resolve the session, and its task, to
-    /// Cancelled. See `CLIAgentSessionsModel::observe_ctrl_c_write`.
-    /// Observation never delays or drops the write itself, and never arms a
-    /// window for a byte that `write_user_bytes_to_pty` rejected (e.g. the
-    /// active block is under agent control).
     pub fn write_viewer_bytes_to_pty(&mut self, bytes: Vec<u8>, ctx: &mut ViewContext<Self>) {
-        let is_ctrl_c = bytes == [0x03];
-        let forwarded = self.write_user_bytes_to_pty(bytes, ctx);
-        if forwarded && is_ctrl_c && FeatureFlag::CtrlCCancelsThirdPartyHarness.is_enabled() {
-            let terminal_view_id = self.view_id;
-            CLIAgentSessionsModel::handle(ctx).update(ctx, |sessions, ctx| {
-                sessions.observe_ctrl_c_write(terminal_view_id, ctx);
-            });
-        }
+        self.write_user_bytes_to_pty(bytes, ctx);
     }
 
     /// Ends the current line before writing the given bytes to the PTY.
@@ -10031,6 +10015,19 @@ impl TerminalView {
         self.clear_selected_blocks(ctx);
         self.update_scroll_position_locking(ScrollPositionUpdate::AfterWriteUserBytesToPty, ctx);
         self.write_to_pty(bytes, ctx);
+        // No plugin hook fires when the user interrupts a CLI agent's turn, so a lone Ctrl-C or
+        // Esc (Claude Code's interrupt key; arrow keys arrive as longer sequences) arms the
+        // session's cancel window. See `CLIAgentSessionsModel::observe_ctrl_c_write`.
+        if matches!(
+            bytes_vec.as_slice(),
+            [escape_sequences::C0::ETX] | [escape_sequences::C0::ESC]
+        ) && FeatureFlag::CtrlCCancelsThirdPartyHarness.is_enabled()
+        {
+            let terminal_view_id = self.view_id;
+            CLIAgentSessionsModel::handle(ctx).update(ctx, |sessions, ctx| {
+                sessions.observe_ctrl_c_write(terminal_view_id, ctx);
+            });
+        }
         self.emit_non_editor_typed_event(bytes_vec, ctx);
         true
     }

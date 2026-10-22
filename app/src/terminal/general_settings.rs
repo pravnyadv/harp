@@ -37,6 +37,18 @@ define_settings_group!(GeneralSettings, settings: [
         toml_path: "general.restore_session",
         description: "Whether to restore the previous session when Warp starts up.",
     },
+    // Harp: brings back the Claude Code session that was running in each restored pane.
+    resume_agent_sessions: ResumeAgentSessions {
+        type: bool,
+        default: false,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Never,
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        storage_key: "ResumeAgentSessions",
+        toml_path: "general.resume_agent_sessions",
+        description: "With session restore on, runs `claude --resume <id>` in each restored pane where a Claude Code session was running when Harp last saved.",
+    },
     add_app_as_login_item: LoginItem {
         type: bool,
         default: true,
