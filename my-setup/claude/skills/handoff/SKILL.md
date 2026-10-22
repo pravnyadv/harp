@@ -8,7 +8,7 @@ description: Hand a task to a brand-new Claude Code session that opens in its ow
 `~/.claude/bin/handoff` queues the task and opens a Harp tab (Warp if Harp is not running) that starts it as `claude -n <name>`. The tab is titled `⎿ <name>`, and all children of this session share one tab color.
 
 1. **Your session name:** call `ListAgents`. Its first line says "This session is <name> [...]". Pass that name (without the bracketed ref) as `--parent`.
-2. **Child name:** short kebab-case naming the task (`fix-webhook-retry`), at most 40 characters. It becomes the tab title and the child's address for `SendMessage`.
+2. **Child name:** short kebab-case naming the task (`fix-webhook-retry`), at most 20 characters so it fits the sidebar row. It becomes the tab title and the child's address for `SendMessage`.
 3. **Mode:** what the user asked for, else `report`.
    - `standalone`: the child never messages this session.
    - `report`: the child messages this session only for blockers, decisions it can't make, and its final result.

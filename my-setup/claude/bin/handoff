@@ -17,7 +17,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n $name && -n $parent ]] || { echo "handoff: --name and --parent are required" >&2; exit 2; }
-[[ $name =~ ^[a-z0-9][a-z0-9-]{0,39}$ ]] || { echo "handoff: name must be short kebab-case" >&2; exit 2; }
+[[ $name =~ ^[a-z0-9][a-z0-9-]{0,23}$ ]] || { echo "handoff: name must be kebab-case, at most 24 characters" >&2; exit 2; }
 prompt=$(cat)
 [[ -n $prompt ]] || { echo "handoff: empty prompt on stdin" >&2; exit 2; }
 
@@ -34,12 +34,13 @@ color=${COLORS[$((hash % ${#COLORS[@]}))]}
 
 # The child's session id is picked here so Harp can show who started whom: under
 # ~/.claude/handoff, parents/<session id> marks a parent and children/<session id> holds the
-# parent's name, then its session id (so Harp can open the child's tab next to the parent's).
+# parent's name, session id and folder (Harp opens the child next to the parent's tab and leaves
+# the folder off the child's row when it matches).
 session_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
 FAMILY="$HOME/.claude/handoff"
 mkdir -p "$QUEUE" "$FAMILY/parents" "$FAMILY/children"
 [[ -n ${CLAUDE_CODE_SESSION_ID:-} ]] && touch "$FAMILY/parents/$CLAUDE_CODE_SESSION_ID"
-printf '%s\n%s\n' "$parent" "${CLAUDE_CODE_SESSION_ID:-}" > "$FAMILY/children/$session_id"
+printf '%s\n%s\n%s\n' "$parent" "${CLAUDE_CODE_SESSION_ID:-}" "$PWD" > "$FAMILY/children/$session_id"
 
 job="$QUEUE/$(date +%s)-$$-$name.json"
 jq -n --arg name "$name" --arg parent "$parent" --arg mode "$mode" --arg cwd "$cwd" --arg session_id "$session_id" \
