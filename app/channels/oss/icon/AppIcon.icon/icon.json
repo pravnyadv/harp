@@ -5,14 +5,10 @@
         {
           "fill": "none",
           "glass": false,
-          "name": "ceramic",
+          "name": "prompt",
           "image-name-specializations": [
             {
-              "value": "ceramic.png"
-            },
-            {
-              "appearance": "dark",
-              "value": "ceramic-dark.png"
+              "value": "prompt.png"
             }
           ]
         }
@@ -36,13 +32,7 @@
   "fill-specializations": [
     {
       "value": {
-        "solid": "srgb:0.49020,0.71765,0.93725,1.00000"
-      }
-    },
-    {
-      "appearance": "dark",
-      "value": {
-        "solid": "srgb:0.14314,0.18235,0.21765,1.00000"
+        "solid": "srgb:0.06275,0.07843,0.10980,1.00000"
       }
     }
   ]

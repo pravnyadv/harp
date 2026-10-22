@@ -71,6 +71,7 @@ use crate::settings::{
     AISettings, DebugSettings, EnforceMinimumContrast, PrivacySettings, TerminalSpacing,
 };
 use crate::terminal::alt_screen::{should_intercept_mouse, should_intercept_scroll};
+use crate::terminal::block_list_settings::BlockListSettings;
 use crate::terminal::block_list_viewport::AutoscrollBehavior;
 use crate::terminal::blockgrid_renderer::BlockGridParams;
 use crate::terminal::input::inline_menu::InlineMenuPositioner;
@@ -91,6 +92,7 @@ use crate::terminal::{SizeInfo, grid_renderer, should_right_click_paste};
 use crate::themes::theme::{Fill, WarpTheme};
 use crate::ui_components::{self, icons as UIIcon};
 use crate::util::color::Opacity;
+use settings::Setting as _;
 
 /// The number of pixels at the bottom of padding where selection scrolling is performed.
 const BOTTOM_VERTICAL_MARGIN: f32 = 10.0;
@@ -2402,13 +2404,15 @@ impl BlockListElement {
         bounds: RectF,
         warp_theme: &WarpTheme,
         block_borders_enabled: bool,
+        shade_restored_blocks: bool,
         snackbar_header: &Option<SnackbarHeader>,
         ai_render_context: &BlocklistAIRenderContext,
         transcript_scope: &TranscriptScope,
         ctx: &mut PaintContext,
     ) {
         let block_height = block.height(transcript_scope).as_f64() as f32 * cell_size.y();
-        if block.is_restored()
+        if shade_restored_blocks
+            && block.is_restored()
             && (!FeatureFlag::AgentView.is_enabled() || !transcript_scope.is_conversation())
         {
             ctx.scene
@@ -2521,6 +2525,7 @@ impl BlockListElement {
             block_grid_params.bounds,
             &block_grid_params.grid_render_params.warp_theme,
             block_borders_enabled,
+            *BlockListSettings::as_ref(app).shade_restored_blocks.value(),
             snackbar_header,
             ai_render_context,
             transcript_scope,
@@ -3911,7 +3916,10 @@ impl Element for BlockListElement {
                                 self.warp_theme
                                     .block_selection_as_context_background_color()
                             } else {
-                                self.warp_theme.block_selection_color()
+                                self.warp_theme.accent().with_opacity(
+                                    (*BlockListSettings::as_ref(app).selected_block_fill.value())
+                                        .min(100),
+                                )
                             })
                             .with_border(
                                 Border::new(border_info.border_width)
@@ -4297,7 +4305,9 @@ impl Element for BlockListElement {
                         grid_origin,
                         vec2f(bounds.width(), *height),
                     ));
-                    rect.with_background(self.warp_theme.restored_blocks_overlay());
+                    if *BlockListSettings::as_ref(app).shade_restored_blocks.value() {
+                        rect.with_background(self.warp_theme.restored_blocks_overlay());
+                    }
 
                     // Offset the text by the half of the remaining space between the separator height
                     // and the font line height to center it vertically.

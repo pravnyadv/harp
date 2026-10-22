@@ -4159,7 +4159,9 @@ impl TerminalView {
         ctx.subscribe_to_model(&block_list_settings_handle, |me, _, evt, ctx| match evt {
             BlockListSettingsChangedEvent::ShowJumpToBottomOfBlockButton { .. }
             | BlockListSettingsChangedEvent::SnackbarEnabled { .. }
-            | BlockListSettingsChangedEvent::ShowBlockDividers { .. } => ctx.notify(),
+            | BlockListSettingsChangedEvent::ShowBlockDividers { .. }
+            | BlockListSettingsChangedEvent::ShadeRestoredBlocks { .. }
+            | BlockListSettingsChangedEvent::SelectedBlockFill { .. } => ctx.notify(),
             BlockListSettingsChangedEvent::PreserveInputFocusOnBlockSelection { .. } => {
                 // Fires for every terminal view, so use the focus-gated variant to avoid
                 // stealing focus from another pane or Settings.
@@ -19181,6 +19183,11 @@ impl TerminalView {
                                 },
                                 ctx,
                             );
+                        } else if self.selected_blocks.is_singleton()
+                            && self.selected_blocks.is_selected(*block_index)
+                        {
+                            // Harp: a plain click on the only selected block clears the selection.
+                            self.clear_selected_blocks(ctx);
                         } else {
                             self.reset_selection_to_single_block(*block_index, ctx);
                         }

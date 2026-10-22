@@ -42,8 +42,7 @@ const OLD_EXECUTABLE_FILE_NAME: &str = "old";
 const PERMISSIONS_TMP_FILE_NAME: &str = "permission_test";
 
 // Harp (the Oss channel) publishes its signed DMGs as GitHub release assets.
-const HARP_LATEST_RELEASE_URL: &str =
-    "https://api.github.com/repos/dominikmartn/harp/releases/latest";
+const HARP_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/pravnyadv/harp/releases/latest";
 
 // Team of the Developer ID that signs Harp releases ("Renderei Martin GmbH").
 const HARP_APPLE_TEAM_ID: &str = "423S87ZC86";
