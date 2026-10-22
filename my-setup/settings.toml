@@ -1,0 +1,29 @@
+[appearance.themes]
+system_theme = false
+theme = { custom = { name = "iTerm Oceanic", path = "__HOME__/.harp/themes/iterm-oceanic.yaml" } }
+
+[appearance.text]
+font_name = "Source Code Pro for Powerline"
+font_size = 14.0
+
+[appearance.vertical_tabs]
+sidebar_palette = "theme"
+sidebar_glass = false
+sidebar_subtitle = "directory"
+sidebar_row_style = "inset_group"
+sidebar_row_gap = 1.0
+auto_group = "project"
+sidebar_title_size = 14.0
+display_granularity = "tabs"
+card_padding = 0.0
+
+[general]
+snackbar_enabled = true
+show_warning_before_quitting = false
+
+[terminal]
+osc52_clipboard_access = "write_only"
+
+[appearance.blocks]
+shade_restored_blocks = false
+selected_block_fill = 6

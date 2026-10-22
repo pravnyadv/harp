@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Fast local Harp build: incremental release, no debug symbols, .app only (no DMG).
+# Installs into /Applications, waiting for Harp to quit if it is open.
+# Usage: harp-build [--no-install] [repo]   (repo defaults to the checkout this script lives in)
+set -euo pipefail
+
+install=1
+if [[ ${1:-} == --no-install ]]; then install=0; shift; fi
+repo="${1:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)}"
+log="${TMPDIR:-/tmp}/harp-build.log"
+
+export PATH="$(brew --prefix rustup)/bin:$HOME/.cargo/bin:$PATH"
+export WARP_BIN_NAME=warp-oss WARP_CHANNEL=oss FEATURES=gui HARP_BUNDLE_FORMAT=osx
+export CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_INCREMENTAL=true
+
+start=$(date +%s)
+if ! (cd "$repo" && ./script/macos/run --release --dont-open) >"$log" 2>&1; then
+  sed 's/\x1b\[[0-9;]*m//g' "$log" | grep -E '^error|-->' | head -20
+  echo "harp-build: failed after $(( $(date +%s) - start ))s, full log: $log" >&2
+  exit 1
+fi
+echo "harp-build: built in $(( $(date +%s) - start ))s"
+
+(( install )) || exit 0
+# A running app must not be swapped under itself: wait for Harp to quit (up to 2 hours), then install.
+if pgrep -qf 'Harp.app/Contents/MacOS'; then
+  echo "harp-build: Harp is open; quit it (Cmd+Q) and the new build installs automatically"
+  osascript -e 'display notification "Quit Harp (Cmd+Q) to install the new build" with title "Harp build ready"' || true
+  for _ in $(seq 2400); do pgrep -qf 'Harp.app/Contents/MacOS' || break; sleep 3; done
+  if pgrep -qf 'Harp.app/Contents/MacOS'; then echo "harp-build: Harp still open after 2h, not installed" >&2; exit 1; fi
+fi
+rm -rf /Applications/Harp.app
+ditto "$repo/target/release/bundle/osx/Harp.app" /Applications/Harp.app
+osascript -e 'display notification "Open it from the Dock or Applications" with title "Harp updated"' || true
+echo "harp-build: installed /Applications/Harp.app (open it from the Dock or Applications)"
