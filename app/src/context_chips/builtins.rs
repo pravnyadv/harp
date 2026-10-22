@@ -269,6 +269,45 @@ pub fn svn_branch_context() -> ShellCommandGenerator {
     ShellCommandGenerator::new(command, Some(vec!["svn".to_owned()]))
 }
 
+/// Generator function that shows the git repository's name. A linked worktree reports its main
+/// repository (the folder holding the shared `.git`), so `~/worktrees/vira/fix-x` shows `vira`.
+pub fn repo_name() -> ShellCommandGenerator {
+    const SH_COMMAND: &str = "common=$(GIT_OPTIONAL_LOCKS=0 git rev-parse --path-format=absolute \
+        --git-common-dir 2>/dev/null) && basename \"$(dirname \"$common\")\"";
+    const FISH_COMMAND: &str = "set common (env GIT_OPTIONAL_LOCKS=0 git rev-parse \
+        --path-format=absolute --git-common-dir 2>/dev/null); and basename (dirname $common)";
+    const PWSH_COMMAND: &str = "$common = git rev-parse --path-format=absolute --git-common-dir \
+        2>$null; if ($common) { Split-Path -Leaf (Split-Path -Parent $common) }";
+    let command = ShellCommand::shell_specific([
+        (ShellType::PowerShell, PWSH_COMMAND.to_string()),
+        (ShellType::Bash, SH_COMMAND.to_string()),
+        (ShellType::Zsh, SH_COMMAND.to_string()),
+        (ShellType::Fish, FISH_COMMAND.to_string()),
+    ]);
+
+    ShellCommandGenerator::new(command, Some(vec!["git".to_owned()]))
+}
+
+/// Generator function that shows the PHP version, only inside a project with a `composer.json`
+/// at its git root (or the current folder outside git).
+pub fn php_version() -> ShellCommandGenerator {
+    const SH_COMMAND: &str = "root=$(GIT_OPTIONAL_LOCKS=0 git rev-parse --show-toplevel 2>/dev/null \
+        || pwd) && [ -f \"$root/composer.json\" ] && php -r 'echo \"v\".PHP_VERSION;' 2>/dev/null";
+    const FISH_COMMAND: &str = "set root (git rev-parse --show-toplevel 2>/dev/null; or pwd); \
+        and test -f $root/composer.json; and php -r 'echo \"v\".PHP_VERSION;' 2>/dev/null";
+    const PWSH_COMMAND: &str = "$root = git rev-parse --show-toplevel 2>$null; if (-not $root) \
+        { $root = (Get-Location).Path }; if (Test-Path (Join-Path $root 'composer.json')) \
+        { php -r 'echo \"v\".PHP_VERSION;' }";
+    let command = ShellCommand::shell_specific([
+        (ShellType::PowerShell, PWSH_COMMAND.to_string()),
+        (ShellType::Bash, SH_COMMAND.to_string()),
+        (ShellType::Zsh, SH_COMMAND.to_string()),
+        (ShellType::Fish, FISH_COMMAND.to_string()),
+    ]);
+
+    ShellCommandGenerator::new(command, Some(vec!["php".to_owned()]))
+}
+
 /// Generator function that shows the number of uncommitted svn files/directories.
 pub fn svn_dirty_items() -> ShellCommandGenerator {
     const SH_COMMAND: &str = "count=$(svn status | wc -l) \
