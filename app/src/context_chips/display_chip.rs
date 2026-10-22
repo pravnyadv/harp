@@ -2044,6 +2044,25 @@ impl DisplayChip {
             DisplayChipKind::GitDiffStats { line_changes_info } => {
                 self.git_diff_stats_chip(line_changes_info, app)
             }
+            // Harp: chips added by this fork carry their icon like the built-in ones; their
+            // `PhpLang` logo is multi-color and fills into a blob, hence `Code2` for PHP.
+            DisplayChipKind::Text
+                if matches!(
+                    self.chip_kind,
+                    ContextChipKind::RepoName | ContextChipKind::PhpVersion
+                ) =>
+            {
+                let color = self
+                    .chip_kind
+                    .default_styles(appearance, self.is_in_agent_view)
+                    .value_color;
+                let icon = self.chip_kind.udi_icon()?;
+                let mut config = UdiChipConfig::new_with_icon(icon, color, self.text.clone());
+                if self.is_in_agent_view {
+                    config = config.for_agent_view();
+                }
+                Some(render_udi_chip(config, appearance))
+            }
             _ => {
                 let mut text = Text::new_inline(String::new(), font_family, font_size)
                     .with_line_height_ratio(appearance.line_height_ratio());

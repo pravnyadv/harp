@@ -329,14 +329,20 @@ impl PromptConfiguration {
     pub fn default_prompt_with_pr_chip_suppressed(suppress_pr_chip: bool) -> Self {
         use crate::features::FeatureFlag;
 
+        // Harp: repo, branch and status, then the toolchain versions, then the folder, the way a
+        // Spaceship zsh prompt reads ("vira on master [⇣] via v22 via v8.3"). Environment, SSH and
+        // subshell chips lead because they only appear when active. `GitBranchStatus` already shows the
+        // branch, so `ShellGitBranch` would repeat it.
         let mut chips = vec![
             ContextChipKind::CondaEnvironment,
             ContextChipKind::VirtualEnvironment,
             ContextChipKind::Ssh,
             ContextChipKind::Subshell,
+            ContextChipKind::RepoName,
+            ContextChipKind::GitBranchStatus,
             ContextChipKind::NodeVersion,
+            ContextChipKind::PhpVersion,
             ContextChipKind::WorkingDirectory,
-            ContextChipKind::ShellGitBranch,
             ContextChipKind::GitDiffStats,
             ContextChipKind::KubernetesContext,
         ];

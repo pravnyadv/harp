@@ -184,6 +184,10 @@ pub enum ContextChipKind {
     VirtualEnvironment,
     CondaEnvironment,
     NodeVersion,
+    /// The git repository's name (a worktree shows its main repository).
+    RepoName,
+    /// The PHP version, inside projects with a `composer.json`.
+    PhpVersion,
     #[schemars(description = "A user-defined custom chip.")]
     Custom {
         title: String,
@@ -339,6 +343,18 @@ impl ContextChipKind {
                 None,
                 RefreshConfig::OnDemandOnly,
             )),
+            Self::RepoName => Some(ContextChip::shell_builtin(
+                "Repository",
+                builtins::repo_name(),
+                None,
+                RefreshConfig::OnDemandOnly,
+            )),
+            Self::PhpVersion => Some(ContextChip::shell_builtin(
+                "PHP Version",
+                builtins::php_version(),
+                None,
+                RefreshConfig::OnDemandOnly,
+            )),
             Self::SvnBranch => Some(ContextChip::shell_builtin(
                 "Svn Branch",
                 builtins::svn_branch_context(),
@@ -412,6 +428,8 @@ impl ContextChipKind {
             Self::VirtualEnvironment => ChipValue::Text("pyenv".to_string()),
             Self::CondaEnvironment => ChipValue::Text("condaenv".to_string()),
             Self::NodeVersion => ChipValue::Text("v18.17.0".to_string()),
+            Self::RepoName => ChipValue::Text("warp".to_string()),
+            Self::PhpVersion => ChipValue::Text("v8.3.0".to_string()),
             Self::Date => ChipValue::Text("July 12, 2023".to_string()),
             Self::Time12 => ChipValue::Text("03:48 pm".to_string()),
             Self::Time24 => ChipValue::Text("15:48".to_string()),
@@ -446,6 +464,8 @@ impl ContextChipKind {
             Self::VirtualEnvironment => prompt_colors.input_prompt_virtual_env,
             Self::CondaEnvironment => prompt_colors.input_prompt_virtual_env,
             Self::NodeVersion => prompt_colors.input_prompt_virtual_env,
+            Self::RepoName => prompt_colors.input_prompt_pwd,
+            Self::PhpVersion => prompt_colors.input_prompt_virtual_env,
             Self::Date => prompt_colors.input_prompt_date,
             Self::Time12 => prompt_colors.input_prompt_time,
             Self::Time24 => prompt_colors.input_prompt_time,
@@ -543,6 +563,8 @@ impl ContextChipKind {
                 Some(Icon::Terminal)
             }
             Self::NodeVersion => Some(Icon::NodeJS),
+            Self::RepoName => Some(Icon::BookOpen),
+            Self::PhpVersion => Some(Icon::Code2),
             Self::ShellGitBranch | Self::GitBranchStatus | Self::SvnBranch => Some(Icon::GitBranch),
             Self::GitDiffStats | Self::SvnDirtyItems => Some(Icon::File),
             Self::GithubPullRequest => Some(Icon::Github),
@@ -581,6 +603,8 @@ pub fn available_chips() -> Vec<ContextChipKind> {
         ContextChipKind::VirtualEnvironment,
         ContextChipKind::CondaEnvironment,
         ContextChipKind::NodeVersion,
+        ContextChipKind::RepoName,
+        ContextChipKind::PhpVersion,
         ContextChipKind::KubernetesContext,
         ContextChipKind::SvnBranch,
         ContextChipKind::SvnDirtyItems,
