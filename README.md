@@ -14,6 +14,10 @@
   <img alt="Platform: macOS" src="https://img.shields.io/badge/platform-macOS-lightgrey">
 </p>
 
+> **This fork (pravnyadv/harp):** a configurable sidebar (theme colors, path line, grouped cards,
+> auto-grouping by project) and a new icon. To set it up on a Mac, follow
+> [my-setup/README.md](my-setup/README.md).
+
 Harp is an unofficial fork of the open-source [Warp](https://github.com/warpdotdev/warp) terminal.
 It replaces the tab bar with a sidebar built for long-running coding agents and keeps the rest of
 Warp as it is.
