@@ -3951,7 +3951,74 @@ impl Workspace {
             {
                 self.clear_inactive_for_terminal(*terminal_view_id, ctx);
             }
+            self.place_handoff_child(event.terminal_view_id(), ctx);
             ctx.notify();
+        }
+    }
+
+    /// Harp: a `/handoff` child's tab opens wherever the tab in view was. When its Claude session
+    /// first reports in, the tab moves right after its parent's tab, into the parent's group, or,
+    /// with the parent outside Harp, into its own project's group. Only children handed off in the
+    /// last minute move, once, so restored and hand-moved tabs stay put.
+    fn place_handoff_child(&mut self, terminal_view_id: EntityId, ctx: &mut ViewContext<Self>) {
+        static PLACED: std::sync::Mutex<Option<HashSet<String>>> = std::sync::Mutex::new(None);
+        let session_id_of = |view_id: EntityId, ctx: &ViewContext<Self>| {
+            CLIAgentSessionsModel::as_ref(ctx)
+                .session(view_id)
+                .and_then(|session| session.session_context.session_id.clone())
+        };
+        let Some(session_id) = session_id_of(terminal_view_id, ctx) else {
+            return;
+        };
+        let Some(parent_session) =
+            vertical_tabs::sidebar::HandoffFamily::fresh_child_parent(&session_id)
+        else {
+            return;
+        };
+        if !PLACED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get_or_insert_default()
+            .insert(session_id)
+        {
+            return;
+        }
+        let tab_with = |me: &Self, found: &dyn Fn(EntityId) -> bool| {
+            me.tabs.iter().position(|tab| {
+                vertical_tabs::tab_terminal_view_ids(tab.pane_group.as_ref(ctx), ctx)
+                    .into_iter()
+                    .any(found)
+            })
+        };
+        let Some(child_index) = tab_with(self, &|view_id| view_id == terminal_view_id) else {
+            return;
+        };
+        let parent_index = tab_with(self, &|view_id| {
+            !parent_session.is_empty()
+                && session_id_of(view_id, ctx).as_deref() == Some(parent_session.as_str())
+        });
+        match parent_index {
+            Some(parent_index) if parent_index != child_index => {
+                let previous_group = self.tabs[child_index].group_id;
+                let parent_group = self.tabs[parent_index].group_id;
+                self.tabs[child_index].group_id = parent_group;
+                self.tabs[child_index].pinned = false;
+                self.move_tab_to_index(child_index, parent_index + 1, ctx);
+                if let Some(previous) = previous_group
+                    && previous_group != parent_group
+                {
+                    self.prune_empty_tab_group(previous, ctx);
+                }
+                self.focus_active_tab(ctx);
+                ctx.dispatch_global_action("workspace:save_app", ());
+            }
+            _ => {
+                let pane_group_id = self.tabs[child_index].pane_group.id();
+                if self.tabs[child_index].group_id.is_some() {
+                    self.remove_tab_from_group(child_index, ctx);
+                }
+                self.auto_group_tab(pane_group_id, ctx);
+            }
         }
     }
 

@@ -20,10 +20,12 @@ fi
 
 name=$(jq -r .name "$job")
 cwd=$(jq -r .cwd "$job")
+session_id=$(jq -r '.session_id // empty' "$job")
 prompt=$(jq -r .prompt "$job")
+rm -f "$HOME/.harp/tab_configs/handoff-$name.toml" "$HOME/.warp/tab_configs/handoff-$name.toml"
 
 cd "$cwd" 2>/dev/null || echo "handoff: $cwd is missing, staying in $PWD"
 printf '\033]0;%s\007' "⎿ $name"
 # Keep the "⎿ name" title: Claude Code would otherwise retitle the tab with its own topic.
 export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1
-claude -n "$name" "$prompt"
+claude ${session_id:+--session-id "$session_id"} -n "$name" "$prompt"

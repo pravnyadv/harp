@@ -8962,7 +8962,7 @@ pub(in crate::workspace::view) mod morph {
 // derive each token from the theme when the sidebar gets a dark mode.
 pub(super) mod sidebar {
     use crate::editor::EditorView;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::sync::OnceLock;
     use warpui::ViewHandle;
 
@@ -9885,6 +9885,110 @@ pub(super) mod sidebar {
             })
     }
 
+    /// Harp: a Claude session that handed work to a new session (`/handoff`) gets `◉` before its
+    /// title, a child that handed nothing on gets `⎿`; any child names its parent in the subtitle.
+    /// Drawn from the session id, so the marks survive a resume, which retitles the tab.
+    fn with_family_mark(
+        title: String,
+        terminal_view_id: Option<EntityId>,
+        app: &AppContext,
+    ) -> String {
+        let Some(id) = claude_session_id(terminal_view_id, app) else {
+            return title;
+        };
+        let (is_parent, is_child) = HandoffFamily::with(|family| {
+            (family.parents.contains(&id), family.parent_of.contains_key(&id))
+        });
+        let bare = without_agent_glyph(&title).trim_start_matches('⎿').trim_start();
+        if is_parent {
+            format!("◉ {bare}")
+        } else if is_child {
+            format!("⎿ {bare}")
+        } else {
+            title
+        }
+    }
+
+    /// A handoff child's subtitle says which session started it: `from discover-58 in ~/Dev/x`.
+    fn with_parent_name(
+        subtitle: String,
+        terminal_view_id: Option<EntityId>,
+        app: &AppContext,
+    ) -> String {
+        claude_session_id(terminal_view_id, app)
+            .and_then(|id| HandoffFamily::with(|family| family.parent_of.get(&id).cloned()))
+            .map_or(subtitle.clone(), |parent| format!("from {parent} in {subtitle}"))
+    }
+
+    fn claude_session_id(terminal_view_id: Option<EntityId>, app: &AppContext) -> Option<String> {
+        CLIAgentSessionsModel::as_ref(app)
+            .session(terminal_view_id?)?
+            .session_context
+            .session_id
+            .clone()
+    }
+
+    /// Who handed work to whom, as `~/.claude/bin/handoff` records it under `~/.claude/handoff`:
+    /// `parents/<session id>` (empty) per parent, `children/<session id>` holding the parent's
+    /// name, then its session id, per child. Rows render often, so the folders are re-read at most
+    /// every two seconds.
+    #[derive(Default)]
+    pub(in crate::workspace::view) struct HandoffFamily {
+        parents: HashSet<String>,
+        parent_of: HashMap<String, String>,
+    }
+
+    impl HandoffFamily {
+        fn with<T>(read: impl FnOnce(&HandoffFamily) -> T) -> T {
+            type Cached = Option<(std::time::Instant, HandoffFamily)>;
+            static FAMILY: std::sync::Mutex<Cached> = std::sync::Mutex::new(None);
+            let mut cached = FAMILY.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if cached
+                .as_ref()
+                .is_none_or(|(read_at, _)| read_at.elapsed() > std::time::Duration::from_secs(2))
+            {
+                *cached = Some((std::time::Instant::now(), Self::load()));
+            }
+            read(&cached.as_ref().expect("just filled").1)
+        }
+
+        fn load() -> Self {
+            let Some(root) = dirs::home_dir().map(|home| home.join(".claude/handoff")) else {
+                return Self::default();
+            };
+            let files = |dir: &str| {
+                std::fs::read_dir(root.join(dir))
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|entry| entry.ok())
+                    .filter_map(|entry| Some((entry.file_name().into_string().ok()?, entry.path())))
+            };
+            Self {
+                parents: files("parents").map(|(id, _)| id).collect(),
+                parent_of: files("children")
+                    .filter_map(|(id, path)| {
+                        let text = std::fs::read_to_string(path).ok()?;
+                        let parent = text.lines().next()?.trim().to_owned();
+                        (!parent.is_empty()).then_some((id, parent))
+                    })
+                    .collect(),
+            }
+        }
+
+        /// The parent's session id of a child handed off within the last minute, read fresh: the
+        /// workspace places a new child's tab once, as its session first reports in.
+        pub(in crate::workspace::view) fn fresh_child_parent(session_id: &str) -> Option<String> {
+            let path = dirs::home_dir()?.join(".claude/handoff/children").join(session_id);
+            let age = std::fs::metadata(&path).ok()?.modified().ok()?.elapsed().ok()?;
+            if age > std::time::Duration::from_secs(60) {
+                return None;
+            }
+            let text = std::fs::read_to_string(path).ok()?;
+            let parent_session = text.lines().nth(1)?.trim();
+            Some(parent_session.to_owned())
+        }
+    }
+
     fn row_subtitle_text(subtitle: String, color: ColorU, app: &AppContext) -> Box<dyn Element> {
         text(subtitle, 11.5, color, Weight::Normal, app).finish()
     }
@@ -9994,7 +10098,7 @@ pub(super) mod sidebar {
         } else {
             colors::INK()
         };
-        let title_string = row_title(props, app);
+        let title_string = with_family_mark(row_title(props, app), terminal_view_id, app);
         let time_string = status_time(status, terminal_view_id, app);
         if !ghost {
             let background = shows_background_dot(status, background_shells(terminal_view_id, app));
@@ -10014,6 +10118,7 @@ pub(super) mod sidebar {
             }
             _ => None,
         }
+        .map(|subtitle| with_parent_name(subtitle, terminal_view_id, app))
         .map(|subtitle| row_subtitle_text(subtitle, scale_alpha(colors::SUB(), fade), app));
 
         let hovered = props
