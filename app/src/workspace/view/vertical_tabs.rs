@@ -801,8 +801,10 @@ pub(super) struct VerticalTabsPanelState {
     other_section_new_tab_mouse_state: MouseStateHandle,
     pub(super) sidebar_toggle_mouse_state: MouseStateHandle,
     pub(super) sidebar_plus_mouse_state: MouseStateHandle,
+    pub(super) sidebar_claude_mouse_state: MouseStateHandle,
     pub(super) card_toggle_mouse_state: MouseStateHandle,
     pub(super) card_plus_mouse_state: MouseStateHandle,
+    pub(super) card_claude_mouse_state: MouseStateHandle,
     /// Slides the framed sidebar in and out.
     pub(super) reveal: sidebar_reveal::Reveal,
 }
@@ -848,8 +850,10 @@ impl Default for VerticalTabsPanelState {
             other_section_new_tab_mouse_state: Default::default(),
             sidebar_toggle_mouse_state: Default::default(),
             sidebar_plus_mouse_state: Default::default(),
+            sidebar_claude_mouse_state: Default::default(),
             card_toggle_mouse_state: Default::default(),
             card_plus_mouse_state: Default::default(),
+            card_claude_mouse_state: Default::default(),
             reveal: Default::default(),
         }
     }
@@ -1928,6 +1932,10 @@ fn render_vertical_tabs_panel(
                 state.sidebar_toggle_mouse_state.clone(),
                 None,
                 WorkspaceAction::ToggleVerticalTabsPanel,
+                app,
+            ))
+            .with_child(sidebar::claude_tab_button(
+                state.sidebar_claude_mouse_state.clone(),
                 app,
             ))
             .with_child(sidebar::header_button(
@@ -8991,6 +8999,7 @@ pub(super) mod sidebar {
         terminal_title_fallback_font,
     };
     use crate::ai::agent::conversation::ConversationStatus;
+    use crate::ai::blocklist::CLAUDE_ORANGE;
     use crate::appearance::Appearance;
     use crate::tab::TabData;
     use crate::terminal::TerminalView;
@@ -10323,11 +10332,44 @@ pub(super) mod sidebar {
         action: WorkspaceAction,
         app: &AppContext,
     ) -> Box<dyn Element> {
+        tinted_header_button(icon, colors::GRAY(), mouse_state, badge, action, app)
+    }
+
+    /// The Claude logo in the header's gray, taking Claude's brand color on hover.
+    pub(in crate::workspace::view) fn claude_tab_button(
+        mouse_state: MouseStateHandle,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        tinted_header_button(
+            WarpIcon::ClaudeLogo,
+            CLAUDE_ORANGE,
+            mouse_state,
+            None,
+            WorkspaceAction::AddClaudeTab,
+            app,
+        )
+    }
+
+    fn tinted_header_button(
+        icon: WarpIcon,
+        hover_color: ColorU,
+        mouse_state: MouseStateHandle,
+        badge: Option<usize>,
+        action: WorkspaceAction,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
         let badge_font = font(app);
         let badge_count = badge.filter(|count| *count > 0);
         Hoverable::new(mouse_state, move |state| {
             let mut button = Container::new(
-                ConstrainedBox::new(Align::new(glyph(icon, colors::GRAY(), 17.)).finish())
+                ConstrainedBox::new(
+                    Align::new(glyph(
+                        icon,
+                        if state.is_hovered() { hover_color } else { colors::GRAY() },
+                        17.,
+                    ))
+                    .finish(),
+                )
                     .with_width(28.)
                     .with_height(28.)
                     .finish(),

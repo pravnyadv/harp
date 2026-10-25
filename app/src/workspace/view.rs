@@ -383,6 +383,7 @@ use crate::tab_configs::telemetry::{
 };
 #[cfg(feature = "local_fs")]
 use crate::tab_configs::telemetry::{NewWorktreeConfigOpenSource, WorktreeBranchNamingMode};
+use crate::tab_configs::session_config::{SessionType, build_tab_config};
 use crate::tab_configs::{
     NewWorktreeModal, NewWorktreeModalEvent, TabConfigParamsModal, TabConfigParamsModalEvent,
 };
@@ -440,7 +441,7 @@ use crate::terminal::view::{
     SyncInputType, TerminalAction,
 };
 use crate::terminal::warpify::settings::WarpifySettings;
-use crate::terminal::{self, BlockListSettings, SizeInfo, TerminalModel, TerminalView};
+use crate::terminal::{self, BlockListSettings, CLIAgent, SizeInfo, TerminalModel, TerminalView};
 use crate::themes::theme::{AnsiColorIdentifier, RespectSystemTheme, ThemeKind};
 use crate::themes::theme_chooser::{ThemeChooser, ThemeChooserEvent, ThemeChooserMode};
 use crate::themes::theme_creator_modal::{ThemeCreatorModal, ThemeCreatorModalEvent};
@@ -13200,6 +13201,26 @@ impl Workspace {
         ctx.notify();
     }
 
+    fn add_claude_tab(&mut self, ctx: &mut ViewContext<Self>) {
+        let directory = self
+            .get_new_tab_startup_directory(
+                NewSessionSource::Tab,
+                Some(ctx.window_id()),
+                None,
+                ctx,
+            )
+            .or_else(dirs::home_dir)
+            .unwrap_or_default();
+        let config = build_tab_config(
+            &SessionType::CliAgent(CLIAgent::Claude),
+            &directory,
+            false,
+            false,
+        );
+        self.open_tab_config_with_params(config, HashMap::new(), None, ctx);
+        ctx.notify();
+    }
+
     fn add_get_started_tab(&mut self, ctx: &mut ViewContext<Self>) {
         self.add_tab_with_pane_layout(
             PanesLayout::Snapshot(Box::new(PaneNodeSnapshot::Leaf(LeafSnapshot {
@@ -22443,6 +22464,10 @@ impl Workspace {
                     WorkspaceAction::ToggleVerticalTabsPanel,
                     ctx,
                 ))
+                .with_child(sidebar::claude_tab_button(
+                    self.vertical_tabs_panel.card_claude_mouse_state.clone(),
+                    ctx,
+                ))
                 .with_child(sidebar::header_button(
                     Icon::SidebarPlus,
                     self.vertical_tabs_panel.card_plus_mouse_state.clone(),
@@ -25191,6 +25216,7 @@ impl Workspace {
                     self.unpin_tab_group(group_id, ctx);
                 }
             }
+            AddClaudeTab => self.add_claude_tab(ctx),
             AddDefaultTab => {
                 let effective_mode = AISettings::as_ref(ctx).default_session_mode(ctx);
                 match effective_mode {

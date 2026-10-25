@@ -258,6 +258,8 @@ pub enum WorkspaceAction {
     /// Unpins the active tab's group.
     UnpinActiveTabGroup,
     AddDefaultTab,
+    /// Adds a terminal tab that starts a new `claude` session.
+    AddClaudeTab,
     AddTerminalTab {
         hide_homepage: bool,
     },
@@ -1002,6 +1004,7 @@ impl WorkspaceAction {
             | ToggleTabColor { .. }
             | ToggleTabGroupColor { .. }
             | AddDefaultTab
+            | AddClaudeTab
             | AddTerminalTab { .. }
             | AddTabWithShell { .. }
             | AddGetStartedTab
