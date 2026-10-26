@@ -131,8 +131,8 @@ use self::vertical_tabs::{
 #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
 use super::action::AutoCloudHandoffTrigger;
 use super::action::{
-    InitContent, NewSessionMenuAnchor, RestoreConversationLayout, TabContextMenuAnchor,
-    VerticalTabsPaneContextMenuTarget, WorkspaceAction,
+    ClaudeButton, InitContent, NewSessionMenuAnchor, RestoreConversationLayout,
+    TabContextMenuAnchor, VerticalTabsPaneContextMenuTarget, WorkspaceAction,
 };
 #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
 use super::auto_handoff::AutoCloudHandoffController;
@@ -733,6 +733,9 @@ const MOBILE_OVERLAY_SCRIM_ALPHA: u8 = 128;
 
 pub const NEW_TAB_BUTTON_POSITION_ID: &str = "new_tab_button";
 pub const NEW_SESSION_MENU_BUTTON_POSITION_ID: &str = "new_session_menu_button";
+const CLAUDE_DIR_MENU_WIDTH: f32 = 300.;
+/// After a click on a Claude button, resting on it this long does not open its directory menu.
+const CLAUDE_DIR_MENU_CLICK_QUIET: Duration = Duration::from_secs(1);
 
 /// Save position for the feature-intro popover, so the changelog chip can float
 /// just above it (see `feature_intro_chip_positioning`).
@@ -1103,6 +1106,13 @@ pub struct Workspace {
     /// variant determines whether the menu sits below the `+` add-tab button
     /// or floats at the pointer position (right-click on the panel chrome).
     show_new_session_dropdown_menu: Option<NewSessionMenuAnchor>,
+    /// Harp: the directory menu that hangs below a Claude button.
+    claude_dir_menu: ViewHandle<Menu<WorkspaceAction>>,
+    /// The Claude button the directory menu hangs from while it is open.
+    claude_dir_menu_button: Option<ClaudeButton>,
+    /// When a Claude button was last clicked: the pointer still resting on it right after a click
+    /// does not open the menu.
+    claude_tab_clicked_at: Option<Instant>,
     changelog_model: ModelHandle<ChangelogModel>,
     palette: ViewHandle<CommandPalette>,
     ctrl_tab_palette: ViewHandle<CommandPalette>,
@@ -3046,6 +3056,7 @@ impl Workspace {
             new_session_sidecar_menu,
             move_to_group_sidecar_menu,
         ) = Self::build_menus(ctx);
+        let claude_dir_menu = Self::build_claude_dir_menu(ctx);
 
         // Subscribe to network changes
         ctx.subscribe_to_model(
@@ -3592,6 +3603,9 @@ impl Workspace {
             show_tab_selection_right_click_menu: None,
             new_session_dropdown_menu,
             show_new_session_dropdown_menu: None,
+            claude_dir_menu,
+            claude_dir_menu_button: None,
+            claude_tab_clicked_at: None,
             changelog_model,
             welcome_tips_view_state,
             welcome_tips_view,
@@ -13201,24 +13215,111 @@ impl Workspace {
         ctx.notify();
     }
 
-    fn add_claude_tab(&mut self, ctx: &mut ViewContext<Self>) {
-        let directory = self
-            .get_new_tab_startup_directory(
-                NewSessionSource::Tab,
-                Some(ctx.window_id()),
-                None,
-                ctx,
-            )
+    fn claude_tab_default_directory(&mut self, ctx: &mut ViewContext<Self>) -> PathBuf {
+        self.get_new_tab_startup_directory(NewSessionSource::Tab, Some(ctx.window_id()), None, ctx)
             .or_else(dirs::home_dir)
-            .unwrap_or_default();
+            .unwrap_or_default()
+    }
+
+    fn add_claude_tab(&mut self, ctx: &mut ViewContext<Self>) {
+        self.claude_tab_clicked_at = Some(Instant::now());
+        let directory = self.claude_tab_default_directory(ctx);
+        self.add_claude_tab_in(&directory, ctx);
+    }
+
+    fn add_claude_tab_in(&mut self, directory: &Path, ctx: &mut ViewContext<Self>) {
+        self.close_claude_dir_menu(ctx);
         let config = build_tab_config(
             &SessionType::CliAgent(CLIAgent::Claude),
-            &directory,
+            directory,
             false,
             false,
         );
         self.open_tab_config_with_params(config, HashMap::new(), None, ctx);
         ctx.notify();
+    }
+
+    fn choose_claude_tab_dir(&mut self, ctx: &mut ViewContext<Self>) {
+        ctx.open_file_picker(
+            |result, ctx| {
+                if let Some(path) = result.ok().and_then(|paths| paths.into_iter().next()) {
+                    ctx.dispatch_typed_action(&WorkspaceAction::AddClaudeTabIn(path.into()));
+                }
+            },
+            FilePickerConfiguration::new().folders_only(),
+        );
+    }
+
+    fn build_claude_dir_menu(ctx: &mut ViewContext<Self>) -> ViewHandle<Menu<WorkspaceAction>> {
+        let menu = ctx.add_typed_action_view(|ctx| {
+            let theme = Appearance::as_ref(ctx).theme();
+            Menu::new()
+                .with_width(CLAUDE_DIR_MENU_WIDTH)
+                .with_border(Border::all(1.).with_border_color(theme.outline().into()))
+                .with_drop_shadow()
+        });
+        ctx.subscribe_to_view(&menu, |me, _, event, ctx| match event {
+            MenuEvent::Close { .. } => me.close_claude_dir_menu(ctx),
+            MenuEvent::ItemSelected | MenuEvent::ItemHovered => {}
+        });
+        menu
+    }
+
+    /// Ranks the Claude history off the main thread, then shows the menu if the pointer is still
+    /// on the button.
+    fn open_claude_dir_menu(&mut self, button: ClaudeButton, ctx: &mut ViewContext<Self>) {
+        let just_clicked = self
+            .claude_tab_clicked_at
+            .is_some_and(|at| at.elapsed() < CLAUDE_DIR_MENU_CLICK_QUIET);
+        if self.claude_dir_menu_button.is_some() || just_clicked {
+            return;
+        }
+        let current = self.claude_tab_default_directory(ctx);
+        let except = current.clone();
+        ctx.spawn(
+            async move { vertical_tabs::claude_dirs::most_used(&except) },
+            move |me, recent, ctx| {
+                if me.claude_dir_menu_button.is_some()
+                    || !me.vertical_tabs_panel.is_over_claude_button_or_menu(button)
+                {
+                    return;
+                }
+                let items = vertical_tabs::claude_dirs::menu_items(current, recent);
+                me.claude_dir_menu.update(ctx, |menu, ctx| {
+                    menu.set_items(items, ctx);
+                    menu.reset_selection(ctx);
+                });
+                me.claude_dir_menu_button = Some(button);
+                me.watch_claude_dir_menu(0, ctx);
+                ctx.notify();
+            },
+        );
+    }
+
+    /// Closes the Claude directory menu once the pointer has been off it and its button for two
+    /// checks in a row; a single miss is the pointer crossing the gap between them.
+    fn watch_claude_dir_menu(&mut self, misses: u8, ctx: &mut ViewContext<Self>) {
+        ctx.spawn(
+            warpui::r#async::Timer::after(Duration::from_millis(150)),
+            move |me, _, ctx| {
+                let Some(button) = me.claude_dir_menu_button else {
+                    return;
+                };
+                if me.vertical_tabs_panel.is_over_claude_button_or_menu(button) {
+                    me.watch_claude_dir_menu(0, ctx);
+                } else if misses >= 1 {
+                    me.close_claude_dir_menu(ctx);
+                } else {
+                    me.watch_claude_dir_menu(misses + 1, ctx);
+                }
+            },
+        );
+    }
+
+    fn close_claude_dir_menu(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.claude_dir_menu_button.take().is_some() {
+            ctx.notify();
+        }
     }
 
     fn add_get_started_tab(&mut self, ctx: &mut ViewContext<Self>) {
@@ -22465,6 +22566,7 @@ impl Workspace {
                     ctx,
                 ))
                 .with_child(sidebar::claude_tab_button(
+                    ClaudeButton::Card,
                     self.vertical_tabs_panel.card_claude_mouse_state.clone(),
                     ctx,
                 ))
@@ -25217,6 +25319,9 @@ impl Workspace {
                 }
             }
             AddClaudeTab => self.add_claude_tab(ctx),
+            AddClaudeTabIn(directory) => self.add_claude_tab_in(directory, ctx),
+            ChooseClaudeTabDir => self.choose_claude_tab_dir(ctx),
+            OpenClaudeDirMenu(button) => self.open_claude_dir_menu(*button, ctx),
             AddDefaultTab => {
                 let effective_mode = AISettings::as_ref(ctx).default_session_mode(ctx);
                 match effective_mode {
@@ -28266,6 +28371,24 @@ impl View for Workspace {
                     positioning,
                 );
             }
+        }
+
+        if let Some(button) = self.claude_dir_menu_button {
+            let menu = ChildView::new(&self.claude_dir_menu).finish();
+            stack.add_positioned_overlay_child(
+                Hoverable::new(
+                    self.vertical_tabs_panel.claude_dir_menu_mouse_state.clone(),
+                    move |_| menu,
+                )
+                .finish(),
+                OffsetPositioning::offset_from_save_position_element(
+                    vertical_tabs::sidebar::claude_button_position_id(button),
+                    vec2f(0., 2.),
+                    PositionedElementOffsetBounds::WindowBySize,
+                    PositionedElementAnchor::BottomLeft,
+                    ChildAnchor::TopLeft,
+                ),
+            );
         }
 
         // Render the new session dropdown menu. This is outside the tab bar visibility
