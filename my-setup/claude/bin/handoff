@@ -20,6 +20,10 @@ done
 [[ $name =~ ^[a-z0-9][a-z0-9-]{0,23}$ ]] || { echo "handoff: name must be kebab-case, at most 24 characters" >&2; exit 2; }
 prompt=$(cat)
 [[ -n $prompt ]] || { echo "handoff: empty prompt on stdin" >&2; exit 2; }
+# SendMessage addresses sessions by name, so a second live session with this name would be ambiguous.
+if claude agents --json 2>/dev/null | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
+  echo "handoff: a live session is already named \"$name\", pick another name" >&2; exit 2
+fi
 
 case "$mode" in
   standalone) rules="Work on this on your own. Do not message the session that started you. Finish the task and stop." ;;
@@ -39,6 +43,9 @@ color=${COLORS[$((hash % ${#COLORS[@]}))]}
 session_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
 FAMILY="$HOME/.claude/handoff"
 mkdir -p "$QUEUE" "$FAMILY/parents" "$FAMILY/children"
+# Harp only needs recent family files, and a job no tab claimed within a day never will be.
+find "$FAMILY/parents" "$FAMILY/children" -type f -mtime +30 -delete 2>/dev/null
+find "$QUEUE" -name '*.json' -mtime +1 -delete 2>/dev/null
 [[ -n ${CLAUDE_CODE_SESSION_ID:-} ]] && touch "$FAMILY/parents/$CLAUDE_CODE_SESSION_ID"
 printf '%s\n%s\n%s\n' "$parent" "${CLAUDE_CODE_SESSION_ID:-}" "$PWD" > "$FAMILY/children/$session_id"
 
@@ -60,9 +67,20 @@ color = "$color"
 id = "main"
 type = "terminal"
 directory = "$cwd"
-commands = ["$HOME/.claude/bin/handoff-open"]
+commands = ["$HOME/.claude/bin/handoff-open ${job##*/}"]
 EOF
   open "$1://tab_config/handoff-$name"
+}
+
+# Success means a session with this (unique) name has registered: `open` returns before the tab
+# exists, and --bg picks its own session id. Leaves that id in child_id.
+wait_for_child() {
+  for _ in {1..30}; do
+    child_id=$(claude agents --json 2>/dev/null | jq -r --arg n "$name" 'first(.[] | select(.name == $n) | .sessionId) // empty')
+    [[ -n $child_id ]] && return 0
+    sleep 1
+  done
+  return 1
 }
 
 # A session inside Harp or Warp knows from its own environment; pgrep covers other terminals
@@ -75,15 +93,24 @@ esac
 [[ -z $app ]] && pgrep -qf 'Harp.app/Contents/MacOS' && app=harp
 [[ -z $app ]] && pgrep -qf 'Warp.app/Contents/MacOS' && app=warp
 
-if [[ $app == harp ]]; then
-  open_tab harp
-  echo "handoff: opening \"$name\" in a new Harp tab ($color)"
-elif [[ $app == warp ]]; then
-  open_tab warp
-  echo "handoff: opening \"$name\" in a new Warp tab ($color)"
+if [[ -n $app ]]; then
+  label=Harp; [[ $app == warp ]] && label=Warp
+  open_tab "$app"
+  if ! wait_for_child; then
+    # Claude registers only after its startup prompts, so a live process means the tab needs a look.
+    if pgrep -qf -- "--session-id $session_id"; then
+      echo "handoff: \"$name\" is open but not running yet, check its $label tab for a startup prompt" >&2
+    else
+      echo "handoff: \"$name\" did not start within 30s, its $label tab may not have opened" >&2
+    fi
+    exit 1
+  fi
+  echo "handoff: \"$name\" is running in a new $label tab ($color)"
 else
   # No Harp or Warp window to open a tab in: start it in the background so the work begins anyway.
   rm "$job"
-  (cd "$cwd" && claude --bg --session-id "$session_id" -n "$name" "$prompt"$'\n\n'"$rules")
+  (cd "$cwd" && claude --bg -n "$name" "$prompt"$'\n\n'"$rules") >/dev/null
+  wait_for_child || { echo "handoff: \"$name\" did not start in the background within 30s" >&2; exit 1; }
+  mv "$FAMILY/children/$session_id" "$FAMILY/children/$child_id"
   echo "handoff: neither Harp nor Warp is running, started \"$name\" in the background (claude attach $name)"
 fi
