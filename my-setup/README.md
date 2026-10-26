@@ -55,7 +55,7 @@ repo on the new Mac and paste the prompt below; it does each step and reports ba
 ```text
 Set up my Claude Code side from my-setup/README.md in this repo. Do each step, show me what changed,
 and back up any file before editing it:
-1. Run ./my-setup/claude/install.sh (installs the /handoff skill and its two scripts).
+1. Run ./my-setup/claude/install.sh (installs the /handoff skill, its scripts and a Stop hook).
 2. Install Warp's Claude Code plugin, which Harp uses for each tab's working / needs-you / done
    status: `claude plugin marketplace add warpdotdev/claude-code-warp`, then
    `claude plugin install warp@claude-code-warp`. Tell me to run /reload-plugins in open sessions.
@@ -90,8 +90,10 @@ What each piece does:
 | Piece | Where | Effect |
 |---|---|---|
 | `/handoff` skill | `~/.claude/skills/handoff/SKILL.md` | "hand this off" starts a separate Claude session for a task, in its own tab. |
-| `handoff` | `~/.claude/bin/handoff` | Queues the task, then opens a `harp://` tab in the task folder through a one-off tab config (Warp if Harp is closed, a background session if neither runs). Children of one session share a tab color. It records who started whom under `~/.claude/handoff/parents` and `children`, which Harp's sidebar reads: the parent row gets a `◉`, a child row reads `from <parent>` (plus its folder when that differs), and a new child's tab opens right after its parent's. |
-| `handoff-open` | `~/.claude/bin/handoff-open` | Runs in the new tab: claims the task, titles the tab `⎿ <name>`, starts `claude -n <name>`. |
+| `handoff` | `~/.claude/bin/handoff` | Queues the task, then opens a `harp://` tab in the task folder through a one-off tab config (Warp if Harp is closed, a background session if neither runs). It refuses a name a live session already has and waits until the child is running. Children of one session share a tab color. It records who started whom under `~/.claude/handoff/parents` and `children`, which Harp's sidebar reads: the parent row gets a `◉`, a child row reads `from <parent>` (plus its folder when that differs), and a new child's tab opens right after its parent's. |
+| `handoff-open` | `~/.claude/bin/handoff-open` | Runs in the new tab: claims its own task, titles the tab `⎿ <name>`, starts `claude -n <name>`. |
+| `handoff-last` | `~/.claude/bin/handoff-last` | `handoff-last <name or session id>` prints another session's last reply, so one session can read another's answer without copy-paste. |
+| Reply snapshots | `~/.claude/hooks/handoff-snapshot.sh`, Stop hook in `~/.claude/settings.json` | Saves each session's last reply to `~/.claude/handoff/last/<session id>.md` for `handoff-last`. |
 | Warp plugin | Claude Code plugins | Sends each session's status to Harp's sidebar. |
 | No sound hooks | `~/.claude/settings.json` | Silent Claude notifications. |
 | Tab titles | `~/.zshrc` | Shells show their folder name. |

@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Print another Claude session's last reply.
+# Usage: handoff-last <session name | session id>
+set -euo pipefail
+
+who="${1:?usage: handoff-last <session name | session id>}"
+PROJECTS="$HOME/.claude/projects"
+
+if [[ $who =~ ^[0-9a-f-]{36}$ ]]; then
+  id=$who
+else
+  id=$(claude agents --json --all 2>/dev/null | jq -r --arg n "$who" 'first(.[] | select(.name == $n) | .sessionId) // empty')
+  if [[ -z $id ]]; then
+    # An exited interactive session isn't listed, so fall back to its transcript's agent-name
+    # records; a /rename adds a newer one, so only the last counts, and the newest transcript wins.
+    while IFS= read -r f; do
+      last=$(grep -o '"agentName":"[^"]*"' "$f" | tail -1)
+      [[ $last == "\"agentName\":\"$who\"" ]] && { id=$(basename "$f" .jsonl); break; }
+    done < <(grep -lF "\"agentName\":\"$who\"" $(find "$PROJECTS" -maxdepth 2 -name '*.jsonl' -mtime -14) 2>/dev/null | xargs ls -t 2>/dev/null)
+  fi
+fi
+[[ -n $id ]] || { echo "handoff-last: no session named $who" >&2; exit 1; }
+
+# The Stop hook's snapshot is the reply as of the session's last finished turn.
+snapshot="$HOME/.claude/handoff/last/$id.md"
+[[ -s $snapshot ]] && { cat "$snapshot"; exit 0; }
+
+# Sessions started before the hook existed have no snapshot yet. Their transcript is an internal
+# format, so this path may break on a Claude Code update.
+transcript=$(ls "$PROJECTS"/*/"$id".jsonl 2>/dev/null | head -1)
+[[ -n $transcript ]] || { echo "handoff-last: no reply recorded for $who" >&2; exit 1; }
+text=$(jq -nr 'reduce inputs as $e ([];
+  if $e.type == "user" and ($e.isMeta | not)
+     and (($e.message.content | type) == "string" or any($e.message.content[]?; .type == "text"))
+  then []
+  elif $e.type == "assistant" then . + [$e.message.content[]? | select(.type == "text") | .text]
+  else . end) | (last // "")' "$transcript")
+[[ -n $text ]] || { echo "handoff-last: $who has no reply in its current turn yet" >&2; exit 1; }
+printf '%s\n' "$text"

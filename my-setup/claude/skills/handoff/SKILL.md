@@ -23,6 +23,12 @@ description: Hand a task to a brand-new Claude Code session that opens in its ow
    PROMPT
    ```
 
-7. Tell the user the tab name and mode in one line. If the script says neither Harp nor Warp is running, it started the session in the background instead; tell them `claude attach <name>` opens it.
+7. The script waits until the child session is running. If it says the name is taken, pick another and run it again. If it says the child is not running yet or did not start, pass that on to the user. Otherwise tell them the tab name and mode in one line. If the script says neither Harp nor Warp is running, it started the session in the background instead; tell them `claude attach <name>` opens it.
 
 Replies from the child arrive here as `<cross-session-message from="<name>">`. Answer one by copying its `from` as your `to`. To hear when the child goes idle, send it `notify_when_idle: true` once; never poll.
+
+## Reading another session's last reply
+
+When you need what another session last said (the user asks for it, or you need its result without them copy-pasting), run `~/.claude/bin/handoff-last <name>`, using the name `ListAgents` shows, or a session id. It prints that session's final message from its last finished turn, verbatim, from a snapshot a Stop hook writes. It works on any local session, not just your children, even if it is busy or has exited. Don't open the transcript JSONL yourself.
+
+Don't `SendMessage` a session to ask what it said. That costs it a whole turn, waits until it is free, and comes back retold instead of verbatim. SendMessage is for asking a session to do something or work out something new.
