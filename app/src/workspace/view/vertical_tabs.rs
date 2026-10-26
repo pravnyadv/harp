@@ -72,7 +72,7 @@ use crate::ui_components::icon_with_status::{IconWithStatusVariant, render_icon_
 use crate::ui_components::icons::Icon as UiIcon;
 use crate::util::bindings::keybinding_name_to_display_string;
 use crate::util::color::Opacity;
-use crate::workspace::action::{NewSessionMenuAnchor, WorkspaceAction};
+use crate::workspace::action::{ClaudeButton, NewSessionMenuAnchor, WorkspaceAction};
 use crate::workspace::cross_window_tab_drag::CrossWindowTabDrag;
 use crate::workspace::hoa_onboarding::HoaOnboardingStep;
 use crate::workspace::sync_inputs::SyncedInputState;
@@ -805,6 +805,7 @@ pub(super) struct VerticalTabsPanelState {
     pub(super) card_toggle_mouse_state: MouseStateHandle,
     pub(super) card_plus_mouse_state: MouseStateHandle,
     pub(super) card_claude_mouse_state: MouseStateHandle,
+    pub(super) claude_dir_menu_mouse_state: MouseStateHandle,
     /// Slides the framed sidebar in and out.
     pub(super) reveal: sidebar_reveal::Reveal,
 }
@@ -854,6 +855,7 @@ impl Default for VerticalTabsPanelState {
             card_toggle_mouse_state: Default::default(),
             card_plus_mouse_state: Default::default(),
             card_claude_mouse_state: Default::default(),
+            claude_dir_menu_mouse_state: Default::default(),
             reveal: Default::default(),
         }
     }
@@ -1373,6 +1375,22 @@ fn resolve_summary_pane_kind_icons(
 }
 
 impl VerticalTabsPanelState {
+    /// True while the pointer is on this Claude button or on the directory menu below it.
+    pub(super) fn is_over_claude_button_or_menu(&self, button: ClaudeButton) -> bool {
+        let button_state = match button {
+            ClaudeButton::Sidebar => &self.sidebar_claude_mouse_state,
+            ClaudeButton::Card => &self.card_claude_mouse_state,
+        };
+        [button_state, &self.claude_dir_menu_mouse_state]
+            .into_iter()
+            .any(|state| {
+                state
+                    .lock()
+                    .expect("claude button hover state lock poisoned")
+                    .is_mouse_over_element()
+            })
+    }
+
     pub(super) fn scroll_to_tab(&self, tab_index: usize) {
         self.scroll_state.scroll_to_position(ScrollTarget {
             position_id: tab_position_id(tab_index),
@@ -1935,6 +1953,7 @@ fn render_vertical_tabs_panel(
                 app,
             ))
             .with_child(sidebar::claude_tab_button(
+                ClaudeButton::Sidebar,
                 state.sidebar_claude_mouse_state.clone(),
                 app,
             ))
@@ -8972,6 +8991,7 @@ pub(super) mod sidebar {
     use crate::editor::EditorView;
     use std::collections::{HashMap, HashSet};
     use std::sync::OnceLock;
+    use std::time::Duration;
     use warpui::ViewHandle;
 
     use chrono::{DateTime, Local};
@@ -9005,7 +9025,7 @@ pub(super) mod sidebar {
     use crate::terminal::TerminalView;
     use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
     use crate::workspace::Workspace;
-    use crate::workspace::action::WorkspaceAction;
+    use crate::workspace::action::{ClaudeButton, WorkspaceAction};
     use crate::workspace::tab_group::TabGroupId;
     use crate::workspace::tab_settings::{SidebarRowStyle, SidebarSubtitle, TabSettings};
     use settings::Setting as _;
@@ -9030,6 +9050,8 @@ pub(super) mod sidebar {
     /// The card header's text starts here, clear of the traffic lights, when the sidebar is closed.
     pub(in crate::workspace::view) const CARD_HEADER_PAD_CLOSED: f32 = 84.;
     pub(in crate::workspace::view) const CARD_HEADER_PAD_OPEN: f32 = 32.;
+    /// How long the pointer rests on the Claude button before its directory menu opens.
+    const CLAUDE_DIR_MENU_DELAY: Duration = Duration::from_millis(250);
 
     const fn rgb(hex: u32) -> ColorU {
         ColorU {
@@ -10332,15 +10354,17 @@ pub(super) mod sidebar {
         action: WorkspaceAction,
         app: &AppContext,
     ) -> Box<dyn Element> {
-        tinted_header_button(icon, colors::GRAY(), mouse_state, badge, action, app)
+        tinted_header_button(icon, colors::GRAY(), mouse_state, badge, action, app).finish()
     }
 
-    /// The Claude logo in the header's gray, taking Claude's brand color on hover.
+    /// The Claude logo in the header's gray, taking Claude's brand color on hover. A click starts
+    /// Claude in the new-tab directory; resting on it opens the directory menu.
     pub(in crate::workspace::view) fn claude_tab_button(
+        button: ClaudeButton,
         mouse_state: MouseStateHandle,
         app: &AppContext,
     ) -> Box<dyn Element> {
-        tinted_header_button(
+        let hoverable = tinted_header_button(
             WarpIcon::ClaudeLogo,
             CLAUDE_ORANGE,
             mouse_state,
@@ -10348,6 +10372,22 @@ pub(super) mod sidebar {
             WorkspaceAction::AddClaudeTab,
             app,
         )
+        .with_hover_in_delay(CLAUDE_DIR_MENU_DELAY)
+        .on_hover(move |hovered, ctx, _, _| {
+            if hovered {
+                ctx.dispatch_typed_action(WorkspaceAction::OpenClaudeDirMenu(button));
+            }
+        });
+        SavePosition::new(hoverable.finish(), claude_button_position_id(button)).finish()
+    }
+
+    pub(in crate::workspace::view) fn claude_button_position_id(
+        button: ClaudeButton,
+    ) -> &'static str {
+        match button {
+            ClaudeButton::Sidebar => "sidebar_claude_button",
+            ClaudeButton::Card => "card_claude_button",
+        }
     }
 
     fn tinted_header_button(
@@ -10357,25 +10397,27 @@ pub(super) mod sidebar {
         badge: Option<usize>,
         action: WorkspaceAction,
         app: &AppContext,
-    ) -> Box<dyn Element> {
+    ) -> Hoverable {
         let badge_font = font(app);
         let badge_count = badge.filter(|count| *count > 0);
         Hoverable::new(mouse_state, move |state| {
+            // Not `is_hovered`, which waits out a hover-in delay.
+            let hovered = state.is_mouse_over_element();
             let mut button = Container::new(
                 ConstrainedBox::new(
                     Align::new(glyph(
                         icon,
-                        if state.is_hovered() { hover_color } else { colors::GRAY() },
+                        if hovered { hover_color } else { colors::GRAY() },
                         17.,
                     ))
                     .finish(),
                 )
-                    .with_width(28.)
-                    .with_height(28.)
-                    .finish(),
+                .with_width(28.)
+                .with_height(28.)
+                .finish(),
             )
             .with_corner_radius(CornerRadius::with_all(Radius::Pixels(7.)));
-            if state.is_hovered() {
+            if hovered {
                 button = button.with_background_color(colors::HOVER());
             }
             let button = button.finish();
@@ -10422,7 +10464,6 @@ pub(super) mod sidebar {
         .on_click(move |ctx, _, _| {
             ctx.dispatch_typed_action(action.clone());
         })
-        .finish()
     }
 
     /// WarpOss: the tabs ⌘1..⌘8 reach in the framed sidebar, top to bottom: the groups' rows,
@@ -11577,6 +11618,192 @@ pub(in crate::workspace::view) mod limit_sources {
                     "rollout-2026-10-21T07-00-00-b.jsonl",
                     "rollout-2026-10-21T09-00-00-c.jsonl"
                 ]
+            );
+        }
+    }
+}
+
+/// The Claude button's directory menu: the current tab's directory, then where Claude has run
+/// most, ranked from `~/.claude/history.jsonl` (one line per prompt, with its project and time).
+pub(in crate::workspace::view) mod claude_dirs {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use serde::Deserialize;
+
+    use crate::menu::{MenuItem, MenuItemFields};
+    use crate::workspace::action::WorkspaceAction;
+
+    /// Rows below the current directory.
+    const LIMIT: usize = 8;
+    /// A prompt's weight halves every this many days, so this week's project outranks a
+    /// bigger one from last quarter.
+    const HALF_LIFE_DAYS: f64 = 14.;
+    const MS_PER_DAY: f64 = 86_400_000.;
+    /// Claude's scratchpads and other throwaway directories live under these.
+    const SCRATCH_ROOTS: [&str; 4] = [
+        "/tmp",
+        "/private/tmp",
+        "/var/folders",
+        "/private/var/folders",
+    ];
+
+    #[derive(Deserialize)]
+    struct Prompt {
+        project: Option<PathBuf>,
+        timestamp: Option<i64>,
+    }
+
+    /// The most used directories other than `current`. Reads the whole history: call it off
+    /// the main thread.
+    pub fn most_used(current: &Path) -> Vec<PathBuf> {
+        let Some(history) = dirs::home_dir()
+            .and_then(|home| std::fs::read_to_string(home.join(".claude/history.jsonl")).ok())
+        else {
+            return Vec::new();
+        };
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| since.as_millis() as i64);
+        rank(&history, now_ms, |dir| dir != current && dir.is_dir())
+    }
+
+    fn rank(history: &str, now_ms: i64, keep: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+        let mut scores = HashMap::<PathBuf, f64>::new();
+        for prompt in history
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Prompt>(line).ok())
+        {
+            let (Some(project), Some(timestamp)) = (prompt.project, prompt.timestamp) else {
+                continue;
+            };
+            if SCRATCH_ROOTS.iter().any(|root| project.starts_with(root)) {
+                continue;
+            }
+            let age_days = (now_ms - timestamp).max(0) as f64 / MS_PER_DAY;
+            *scores.entry(project).or_default() += 0.5_f64.powf(age_days / HALF_LIFE_DAYS);
+        }
+        let mut ranked: Vec<_> = scores.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        ranked
+            .into_iter()
+            .map(|(dir, _)| dir)
+            .filter(|dir| keep(dir))
+            .take(LIMIT)
+            .collect()
+    }
+
+    /// The menu: `current` first, then `recent`, then a folder picker.
+    pub fn menu_items(current: PathBuf, recent: Vec<PathBuf>) -> Vec<MenuItem<WorkspaceAction>> {
+        let home = dirs::home_dir();
+        let row = |dir: PathBuf| {
+            let (name, location) = label(&dir, home.as_deref());
+            MenuItem::Item(
+                MenuItemFields::new_with_label(name, location)
+                    .with_on_select_action(WorkspaceAction::AddClaudeTabIn(dir)),
+            )
+        };
+        let mut items = vec![row(current)];
+        if !recent.is_empty() {
+            items.push(MenuItem::Separator);
+            items.extend(recent.into_iter().map(row));
+        }
+        items.push(MenuItem::Separator);
+        items.push(MenuItem::Item(
+            MenuItemFields::new("Choose folder...")
+                .with_on_select_action(WorkspaceAction::ChooseClaudeTabDir),
+        ));
+        items
+    }
+
+    /// A row's name and where it lives, with the home directory written as `~`.
+    fn label(dir: &Path, home: Option<&Path>) -> (String, String) {
+        let tilde = |path: &Path| match home.and_then(|home| path.strip_prefix(home).ok()) {
+            Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+            Some(rest) => format!("~/{}", rest.display()),
+            None => path.display().to_string(),
+        };
+        match dir.file_name() {
+            Some(_) if Some(dir) == home => ("~".to_owned(), String::new()),
+            Some(name) => (
+                name.to_string_lossy().into_owned(),
+                dir.parent().map(tilde).unwrap_or_default(),
+            ),
+            None => (tilde(dir), String::new()),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        const DAY: i64 = 86_400_000;
+        const NOW: i64 = 1_000 * DAY;
+
+        fn line(project: &str, days_ago: i64) -> String {
+            format!(
+                r#"{{"display":"hi","project":"{project}","timestamp":{}}}"#,
+                NOW - days_ago * DAY
+            )
+        }
+
+        #[test]
+        fn recent_use_outranks_a_bigger_old_pile() {
+            let mut history: Vec<_> = (0..20).map(|_| line("/old", 120)).collect();
+            history.extend((0..3).map(|_| line("/new", 1)));
+            history.push(line("/rare", 60));
+            assert_eq!(
+                rank(&history.join("\n"), NOW, |_| true),
+                [
+                    PathBuf::from("/new"),
+                    PathBuf::from("/old"),
+                    PathBuf::from("/rare")
+                ]
+            );
+        }
+
+        #[test]
+        fn skips_scratch_dropped_and_malformed_entries() {
+            let history = [
+                line("/private/tmp/claude-501/x/scratchpad", 0),
+                line("/gone", 0),
+                line("/kept", 5),
+                "not json".to_owned(),
+                r#"{"display":"no project","timestamp":1}"#.to_owned(),
+            ]
+            .join("\n");
+            assert_eq!(
+                rank(&history, NOW, |dir| dir != Path::new("/gone")),
+                [PathBuf::from("/kept")]
+            );
+        }
+
+        #[test]
+        fn caps_the_list() {
+            let history: Vec<_> = (0..20).map(|i| line(&format!("/p{i}"), i)).collect();
+            assert_eq!(rank(&history.join("\n"), NOW, |_| true).len(), LIMIT);
+        }
+
+        #[test]
+        fn labels_show_home_as_tilde() {
+            let home = Path::new("/Users/me");
+            assert_eq!(
+                label(Path::new("/Users/me/Dev/harp"), Some(home)),
+                ("harp".to_owned(), "~/Dev".to_owned())
+            );
+            assert_eq!(
+                label(Path::new("/Users/me/Apps"), Some(home)),
+                ("Apps".to_owned(), "~".to_owned())
+            );
+            assert_eq!(label(home, Some(home)), ("~".to_owned(), String::new()));
+            assert_eq!(
+                label(Path::new("/opt/work"), Some(home)),
+                ("work".to_owned(), "/opt".to_owned())
+            );
+            assert_eq!(
+                label(Path::new("/"), Some(home)),
+                ("/".to_owned(), String::new())
             );
         }
     }

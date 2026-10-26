@@ -105,6 +105,13 @@ impl NewSessionMenuAnchor {
     }
 }
 
+/// Where a Claude button sits: the open sidebar's header, or the card header while it is closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaudeButton {
+    Sidebar,
+    Card,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum VerticalTabsPaneContextMenuTarget {
     ClickedPane(PaneViewLocator),
@@ -260,6 +267,12 @@ pub enum WorkspaceAction {
     AddDefaultTab,
     /// Adds a terminal tab that starts a new `claude` session.
     AddClaudeTab,
+    /// Adds a terminal tab that starts a new `claude` session in this directory.
+    AddClaudeTabIn(PathBuf),
+    /// Asks for a folder, then starts a new `claude` session there.
+    ChooseClaudeTabDir,
+    /// The pointer has rested on a Claude button: shows the directory menu below it.
+    OpenClaudeDirMenu(ClaudeButton),
     AddTerminalTab {
         hide_homepage: bool,
     },
@@ -1005,6 +1018,7 @@ impl WorkspaceAction {
             | ToggleTabGroupColor { .. }
             | AddDefaultTab
             | AddClaudeTab
+            | AddClaudeTabIn(_)
             | AddTerminalTab { .. }
             | AddTabWithShell { .. }
             | AddGetStartedTab
@@ -1235,6 +1249,7 @@ impl WorkspaceAction {
             | ShowTeamSwitcherMenu => false,
             #[cfg(debug_assertions)]
             ShowHoaOnboardingFlow => false,
+            ChooseClaudeTabDir | OpenClaudeDirMenu(_) => false,
             #[cfg(target_family = "wasm")]
             ToggleConversationTranscriptDetailsPanel => false,
             #[cfg(debug_assertions)]
