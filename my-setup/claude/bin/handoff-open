@@ -1,20 +1,13 @@
 #!/usr/bin/env bash
-# Runs inside the Harp or Warp tab that `handoff` opened: claims the oldest queued job and starts it.
+# Runs inside the Harp or Warp tab that `handoff` opened for one job: claims that job and starts it.
+# Usage: handoff-open <job file name>
 set -uo pipefail
 
 QUEUE="$HOME/.claude/handoff/pending"
-CLAIMED="$HOME/.claude/handoff/claimed"
-mkdir -p "$CLAIMED"
-
-job=""
-for f in "$QUEUE"/*.json; do
-  [[ -e $f ]] || break
-  # mv is atomic, so two tabs opening at once can never claim the same job.
-  if mv "$f" "$CLAIMED/" 2>/dev/null; then job="$CLAIMED/$(basename "$f")"; break; fi
-done
-
-if [[ -z $job ]]; then
-  echo "handoff: no queued task"
+job="$QUEUE/${1:-none}.claimed"
+# mv is atomic, so a job starts at most once even if its tab opens twice.
+if ! mv "$QUEUE/${1:-none}" "$job" 2>/dev/null; then
+  echo "handoff: no queued task ${1:-}"
   exit 0
 fi
 
@@ -22,7 +15,7 @@ name=$(jq -r .name "$job")
 cwd=$(jq -r .cwd "$job")
 session_id=$(jq -r '.session_id // empty' "$job")
 prompt=$(jq -r .prompt "$job")
-rm -f "$HOME/.harp/tab_configs/handoff-$name.toml" "$HOME/.warp/tab_configs/handoff-$name.toml"
+rm -f "$job" "$HOME/.harp/tab_configs/handoff-$name.toml" "$HOME/.warp/tab_configs/handoff-$name.toml"
 
 cd "$cwd" 2>/dev/null || echo "handoff: $cwd is missing, staying in $PWD"
 printf '\033]0;%s\007' "⎿ $name"
