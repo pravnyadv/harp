@@ -7346,6 +7346,45 @@ fn test_link_at_range_trims_zero_width_spaces() {
 }
 
 #[test]
+fn hovered_link_is_dropped_when_output_redraws_over_it() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            let mut model = view.model.lock();
+            model.simulate_long_running_block("claude", "see https://warp.dev");
+            let point = WithinModel::BlockList(WithinBlock::new(
+                Point::new(0, 6),
+                model.block_list().active_block_index(),
+                crate::terminal::GridType::Output,
+            ));
+            let url = model
+                .url_at_point(&point)
+                .expect("the url should be detected");
+            view.highlighted_link
+                .set(GridHighlightedLink::Url(url), &mut model);
+            drop(model);
+
+            view.handle_terminal_wakeup((), ctx);
+            assert!(
+                view.highlighted_link.is_some(),
+                "output that leaves the link alone keeps the highlight"
+            );
+
+            view.model
+                .lock()
+                .process_bytes("\rnot a link, just prose here");
+            view.handle_terminal_wakeup((), ctx);
+            assert!(
+                view.highlighted_link.is_none(),
+                "text redrawn over the link drops the highlight"
+            );
+        });
+    })
+}
+
+#[test]
 fn test_scroll_position_doesnt_change_when_block_finished() {
     use futures_lite::StreamExt;
 
