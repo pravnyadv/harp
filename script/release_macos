@@ -186,7 +186,7 @@ if [[ $PUBLISH == true ]]; then
   step "Publish GitHub release $TAG on $REPO"
   NOTES="Built from $(git rev-parse HEAD)."
   if [[ $NOTARIZE == false ]]; then
-    NOTES+=$'\n\n'"Not notarized. After copying Harp to Applications, allow it once under System Settings > Privacy & Security, or run \`xattr -dr com.apple.quarantine /Applications/Harp.app\`."
+    NOTES+=$'\n\n'"Not notarized. Install from Terminal to skip the Gatekeeper prompt: \`curl -fsSL https://raw.githubusercontent.com/$REPO/main/script/install_release | bash -s $TAG\`. Opened from a browser download instead, allow it once under System Settings > Privacy & Security."
   fi
   run gh release create "$TAG" "$DMG" --repo "$REPO" --target "$(git rev-parse HEAD)" \
     --title "Harp $VERSION ($SHA)" --notes "$NOTES"
