@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Offers upstream changes to this fork as pull requests, never touching main directly.
+#
+#   script/sync_upstream [--dry-run]
+#
+# For each upstream below, the upstream branch tip is pushed to `sync/<name>` on origin and one
+# pull request from it into main is kept open. Merge it with a merge commit (not squash or
+# rebase): that layers upstream's commits on top of the fork's own changes and keeps later syncs
+# incremental. GitHub shows on the PR whether it merges cleanly.
+#
+# Meant to run unattended (pm2 cron), so it works from git refs only and never checks out a
+# branch: the checkout it runs in can be mid-edit.
+set -euo pipefail
+
+# pm2 pipes this file in from origin/main, so locate the repo from the working directory.
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+DRY_RUN=false
+case "${1:-}" in
+  --dry-run) DRY_RUN=true ;;
+  "") ;;
+  -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+  *) echo "unknown option: $1" >&2; exit 1 ;;
+esac
+
+# name  repo  branch
+UPSTREAMS=(
+  "warp warpdotdev/warp master"
+  "harp dominikmartn/harp main"
+)
+
+REPO="$(git remote get-url origin | sed -E 's#^(git@github\.com:|https://github\.com/)##; s#\.git$##')"
+
+run() {
+  echo "+ $*"
+  [[ $DRY_RUN == true ]] || "$@"
+}
+
+notify() {
+  echo "$1"
+  [[ $DRY_RUN == true ]] || osascript -e "display notification \"$1\" with title \"Harp upstream sync\"" || true
+}
+
+echo "== $(date '+%F %T') syncing into $REPO"
+git fetch --quiet origin main
+
+for upstream in "${UPSTREAMS[@]}"; do
+  read -r name upstream_repo branch <<<"$upstream"
+  ref="refs/sync-upstream/$name"
+  git fetch --quiet --no-tags "https://github.com/$upstream_repo.git" "+$branch:$ref"
+  tip="$(git rev-parse "$ref")"
+
+  if git merge-base --is-ancestor "$tip" origin/main; then
+    echo "$name: main already has $upstream_repo $branch (${tip:0:8})"
+    continue
+  fi
+
+  new_commits="$(git rev-list --count "origin/main..$tip")"
+  remote_tip="$(git ls-remote origin "refs/heads/sync/$name" | cut -f1)"
+  if [[ "$remote_tip" != "$tip" ]]; then
+    # Upstream only moves forward, so a plain push suffices; a rejected one means upstream
+    # rewrote history and needs a human.
+    run git push --quiet origin "$tip:refs/heads/sync/$name"
+  fi
+
+  open_pr="$(gh pr list --repo "$REPO" --head "sync/$name" --state open --json url --jq '.[0].url // ""')"
+  if [[ -n "$open_pr" ]]; then
+    if [[ "$remote_tip" != "$tip" ]]; then
+      notify "$upstream_repo: $new_commits commits waiting, PR updated"
+    else
+      echo "$name: $open_pr already up to date ($new_commits commits)"
+    fi
+    continue
+  fi
+
+  security="$(git log --format='- %h %s' "origin/main..$tip" | grep -iE 'secur|cve|vuln|exploit|sanitiz|escape|inject|xss|auth' || true)"
+  body="$new_commits commits from \`$upstream_repo\` \`$branch\` that main does not have yet.
+
+Merge with **Create a merge commit**, never squash or rebase, so the fork's own changes stay on top and the next sync only brings what is new. If GitHub reports conflicts, resolve them locally on a branch off main.
+
+Commits that mention security-related words:
+${security:-none}
+
+Opened by \`script/sync_upstream\`."
+  run gh pr create --repo "$REPO" --base main --head "sync/$name" \
+    --title "Sync $upstream_repo $branch" --body "$body"
+  notify "$upstream_repo: $new_commits new commits, sync PR opened"
+done
