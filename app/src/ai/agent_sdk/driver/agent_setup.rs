@@ -23,7 +23,9 @@ use super::environment::{
     FACTORY_REPO_CLONE_URL_ENV_VAR, FACTORY_REPO_DIR_ENV_VAR,
     prepend_factory_definition_clone_for_values,
 };
-use super::{AgentDriver, AgentDriverError, environment, mcp_startup};
+use super::{
+    AgentDriver, AgentDriverError, StandbyWorkspace, WorkspaceState, environment, mcp_startup,
+};
 use crate::ai::agent_sdk::environment_snapshot::{
     EnvironmentSnapshot, EnvironmentSnapshotReporter,
 };
@@ -43,16 +45,27 @@ impl AgentDriver {
     #[cfg_attr(all(target_family = "wasm", not(test)), expect(dead_code))]
     pub(crate) async fn prepare_resources(
         foreground: &ModelSpawner<Self>,
+        harness: Harness,
         mcp_specs: Vec<MCPSpec>,
         global_skills: GlobalSkillResolution,
         setup_events: &SetupClientEventReporter,
     ) -> Result<PathBuf, AgentDriverError> {
         // Standby resolves global skills before this call to check checkout names before any clone.
         let mut workspace = foreground
-            .spawn(|me, _| me.workspace.take())
+            .spawn(|me, _| match me.workspace.take() {
+                Some(WorkspaceState::Pending(workspace)) => Some(workspace),
+                Some(WorkspaceState::Prepared(_)) | None => None,
+            })
             .await?
             .ok_or(AgentDriverError::InvalidRuntimeState)?;
+        let prepared_configuration = workspace.clone();
         bootstrap_terminal(foreground, setup_events).await?;
+        setup_events
+            .record_result(
+                SetupStep::CloudProviderSetup,
+                Self::setup_cloud_providers(foreground),
+            )
+            .await?;
         setup_events
             .record_result(
                 SetupStep::GlobalSkillRepoClone,
@@ -88,16 +101,27 @@ impl AgentDriver {
             .await?;
         let prepared = prepare_workspace(
             foreground,
-            Harness::Oz,
+            harness,
             workspace,
             setup_events,
             snapshot_reporter,
         )
         .await?;
         let working_dir = prepared.harness_working_dir.clone();
+        let repositories = prepared.repositories.clone();
         foreground
-            .spawn(move |me, _| me.harness_working_dir = working_dir)
+            .spawn(move |me, _| {
+                me.harness_working_dir = working_dir;
+                me.workspace = Some(WorkspaceState::Prepared(StandbyWorkspace {
+                    harness,
+                    configuration: prepared_configuration,
+                    repositories,
+                }));
+            })
             .await?;
+        if harness != Harness::Oz {
+            return Ok(prepared.harness_working_dir);
+        }
         let managed_mcp_client = foreground
             .spawn(|_, ctx| ServerApiProvider::as_ref(ctx).get_managed_mcp_client())
             .await?;
