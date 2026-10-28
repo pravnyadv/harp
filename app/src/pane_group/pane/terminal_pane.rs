@@ -60,7 +60,7 @@ use crate::server::team_scope::RequestTeamScope;
 use crate::server::telemetry::CloudAgentShellRecoveryFailureClass;
 use crate::session_management::SessionNavigationData;
 use crate::terminal::CLIAgent;
-use crate::terminal::cli_agent_sessions::{CLIAgentSessionsModel, resume_store};
+use crate::terminal::cli_agent_sessions::{CLIAgentSessionsModel, claude_registry, resume_store};
 use crate::terminal::general_settings::GeneralSettings;
 #[cfg(not(target_family = "wasm"))]
 use crate::terminal::shared_session::SharedSessionSource;
@@ -467,12 +467,21 @@ impl PaneContent for TerminalPane {
 
     fn snapshot(&self, app: &AppContext) -> LeafContents {
         let view_handle = self.terminal_view(app);
-        // Harp: keep `claude --resume` able to bring this pane's live Claude session back.
-        let live_claude_session = CLIAgentSessionsModel::as_ref(app)
-            .session(view_handle.id())
-            .filter(|session| session.agent == CLIAgent::Claude)
-            .and_then(|session| session.session_context.session_id.as_deref());
-        resume_store::record(&self.uuid, live_claude_session);
+        // Harp: keep `claude --resume` able to bring this pane's live Claude session back. Claude's
+        // own registry wins over hook events, which miss a session that never reported in.
+        let live_claude_session = self
+            .terminal_manager(app)
+            .as_ref(app)
+            .shell_pid()
+            .filter(|_| view_handle.as_ref(app).is_long_running())
+            .and_then(claude_registry::session_under)
+            .or_else(|| {
+                CLIAgentSessionsModel::as_ref(app)
+                    .session(view_handle.id())
+                    .filter(|session| session.agent == CLIAgent::Claude)
+                    .and_then(|session| session.session_context.session_id.clone())
+            });
+        resume_store::record(&self.uuid, live_claude_session.as_deref());
         let view = view_handle.as_ref(app);
         let is_active = view.is_active_session(app);
 

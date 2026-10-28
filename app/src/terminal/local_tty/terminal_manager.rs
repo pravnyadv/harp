@@ -134,9 +134,7 @@ pub struct TerminalManager<S> {
     /// The manager is responsible for managing the lifetime of the remote server controller.
     remote_server_controller: ModelHandle<RemoteServerController>,
 
-    /// The process ID of the PTY. Purely used for integration tests. None if the PTY has not yet
-    /// been started.
-    #[cfg(feature = "integration_tests")]
+    /// The process ID of the PTY's shell. None if the PTY has not yet been started.
     pub(super) pid: Option<u32>,
 
     /// An inactive receiver for PTY reads that we can upgrade to an active
@@ -556,7 +554,6 @@ impl<S> TerminalManager<S> {
             terminal_attributes_poller: None,
             pty_controller,
             remote_server_controller,
-            #[cfg(feature = "integration_tests")]
             pid: None,
             inactive_pty_reads_rx,
             session_sharer: Rc::new(RefCell::new(None)),
@@ -932,10 +929,7 @@ impl<S> TerminalManager<S> {
             model.clone(),
             resources.channel_event_proxy,
         ));
-        #[cfg(feature = "integration_tests")]
-        {
-            self.pid = Some(pid);
-        }
+        self.pid = Some(pid);
 
         self.view.update(ctx, |surface, ctx| {
             surface.on_active_shell_launch_data_updated(Some(shell_launch_data), ctx);
@@ -1156,10 +1150,7 @@ fn on_shell_determined<S: TerminalSurface>(
     );
 
     manager.event_loop_handle = Some(event_loop_handle);
-    #[cfg(feature = "integration_tests")]
-    {
-        manager.pid = Some(pid);
-    }
+    manager.pid = Some(pid);
 
     manager.view.update(ctx, |surface, ctx| {
         surface.on_shell_determined(ctx);

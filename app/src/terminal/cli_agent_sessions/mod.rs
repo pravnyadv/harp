@@ -1,3 +1,4 @@
+pub mod claude_registry;
 pub mod event;
 pub mod listener;
 pub mod resume_store;
