@@ -140,6 +140,16 @@ pub(super) async fn fetch_transcript_envelope<E: serde::de::DeserializeOwned>(
     })
 }
 
+/// The MCP servers resolved for a third-party harness run, keyed by server name.
+#[derive(Debug, Default)]
+pub(crate) struct ResolvedMCPServers {
+    /// The config each harness writes into its native format.
+    pub(crate) configs: HashMap<String, JSONMCPServer>,
+    /// The `warp_id` of each server resolved from a managed MCP server or a well-known
+    /// integration, with the semantics of `MCPServerConfig.warp_id`.
+    pub(crate) warp_ids: HashMap<String, String>,
+}
+
 /// Trait for third-party agent harnesses that execute prompts via their own CLIs.
 ///
 /// Each new external harness (e.g. Claude, Codex) implements this to be used with cloud agents.
@@ -258,7 +268,7 @@ pub(crate) trait ThirdPartyHarness: Send + Sync {
         skill_dirs: &[PathBuf],
         factory_repository_contract: bool,
         resolved_secrets: &HashMap<String, ManagedSecretValue>,
-        resolved_mcp_servers: &HashMap<String, JSONMCPServer>,
+        resolved_mcp_servers: &ResolvedMCPServers,
         third_party_harness_model_config: Option<&HarnessModelConfig>,
     ) -> Result<Box<dyn HarnessRunner>, AgentDriverError>;
 }
@@ -567,10 +577,14 @@ pub(crate) fn task_env_vars(
 
 /// Returns the per-run environment for a third-party harness.
 ///
-/// Model selection is carried in the environment only for the PTY transport; ACP sessions
-/// select their model through the protocol instead. We use the `ANTHROPIC_MODEL` env var
+/// Claude Code reads its model from `ANTHROPIC_MODEL` on both transports. We use the env var
 /// rather than the `--model` CLI flag because the env var is the most reliable mechanism and
 /// avoids precedence conflicts with Claude Code's `settings.json`.
+///
+/// An ACP session additionally selects the model through the protocol, which only accepts
+/// values the adapter advertises from Claude Code's model picker. The picker lists aliases
+/// such as `opus` and `sonnet`, so `ANTHROPIC_CUSTOM_MODEL_OPTION` adds the requested id as a
+/// picker entry and lets the protocol selection match it verbatim.
 pub(crate) fn harness_env_vars(
     selected_harness: Harness,
     transport: HarnessTransport,
@@ -579,17 +593,25 @@ pub(crate) fn harness_env_vars(
     let mut env_vars = HashMap::new();
 
     match (selected_harness, transport) {
-        (Harness::Claude, HarnessTransport::Pty) => {
+        (Harness::Claude, transport) => {
             if let Some(model_id) = third_party_harness_model_config
                 .map(|config| config.model_id.as_str())
                 .filter(|id| !id.is_empty())
             {
                 env_vars.insert(OsString::from("ANTHROPIC_MODEL"), OsString::from(model_id));
+                match transport {
+                    HarnessTransport::Acp if model_id != "default" => {
+                        env_vars.insert(
+                            OsString::from("ANTHROPIC_CUSTOM_MODEL_OPTION"),
+                            OsString::from(model_id),
+                        );
+                    }
+                    HarnessTransport::Acp | HarnessTransport::Pty => {}
+                }
             }
         }
         (Harness::Pi, _) => return pi_env_vars(),
-        (Harness::Claude, HarnessTransport::Acp)
-        | (
+        (
             Harness::Oz | Harness::OpenCode | Harness::Gemini | Harness::Codex | Harness::Unknown,
             _,
         ) => {}
