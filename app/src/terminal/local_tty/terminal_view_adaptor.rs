@@ -2228,6 +2228,9 @@ impl TerminalManagerTrait for TerminalManager<TerminalView> {
     fn model(&self) -> Arc<FairMutex<TerminalModel>> {
         self.model.clone()
     }
+    fn shell_pid(&self) -> Option<u32> {
+        self.pid
+    }
     fn recover_cloud_shell(
         &mut self,
         request: crate::terminal::shell_recovery::CloudShellRecoveryRequest,

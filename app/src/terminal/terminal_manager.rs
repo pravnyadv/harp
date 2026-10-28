@@ -26,6 +26,11 @@ pub trait TerminalManager: Any {
     /// Returns the backing terminal model.
     fn model(&self) -> Arc<FairMutex<TerminalModel>>;
 
+    /// The process ID of the local shell this session runs, when there is one.
+    fn shell_pid(&self) -> Option<u32> {
+        None
+    }
+
     /// Called when the terminal pane detaches from its pane group. This is a sensitive path -
     /// do not do anything with high latency here. Note that we cannot rely on events emitted
     /// here to be processed before the window closes.
