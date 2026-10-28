@@ -9588,25 +9588,31 @@ pub(super) mod sidebar {
             return strip_group_prefix(title, props.group_name.as_deref()).to_owned();
         }
         if let TypedPane::Terminal(terminal_pane) = &props.typed {
-            let terminal_view = terminal_pane.terminal_view(app).as_ref(app);
-            let terminal_title = terminal_view.terminal_title_from_shell();
-            let working_directory = resolved_terminal_working_directory(terminal_view, app)
-                .unwrap_or_else(|| terminal_title.clone());
-            let agent_text = terminal_agent_text(terminal_view, app);
-            let (conversation_title, cli_title) =
-                preferred_agent_tab_titles(&agent_text, agent_tab_text_preference(app));
-            let line = terminal_primary_line_data(
-                terminal_view.is_long_running_and_user_controlled(),
-                conversation_title,
-                cli_title,
-                terminal_title.as_str(),
-                working_directory.as_str(),
-                terminal_title_fallback_font(&agent_text),
-                terminal_view.last_completed_command_text(),
-            );
-            return strip_group_prefix(line.text(), props.group_name.as_deref()).to_owned();
+            let title = terminal_title(terminal_pane.terminal_view(app).as_ref(app), app);
+            return strip_group_prefix(&title, props.group_name.as_deref()).to_owned();
         }
         strip_group_prefix(props.displayed_title(), props.group_name.as_deref()).to_owned()
+    }
+
+    /// A terminal's title as its sidebar row shows it, before the group prefix is stripped.
+    fn terminal_title(terminal_view: &TerminalView, app: &AppContext) -> String {
+        let terminal_title = terminal_view.terminal_title_from_shell();
+        let working_directory = resolved_terminal_working_directory(terminal_view, app)
+            .unwrap_or_else(|| terminal_title.clone());
+        let agent_text = terminal_agent_text(terminal_view, app);
+        let (conversation_title, cli_title) =
+            preferred_agent_tab_titles(&agent_text, agent_tab_text_preference(app));
+        terminal_primary_line_data(
+            terminal_view.is_long_running_and_user_controlled(),
+            conversation_title,
+            cli_title,
+            terminal_title.as_str(),
+            working_directory.as_str(),
+            terminal_title_fallback_font(&agent_text),
+            terminal_view.last_completed_command_text(),
+        )
+        .text()
+        .to_owned()
     }
 
     fn scale_alpha(color: ColorU, factor: f32) -> ColorU {
@@ -10936,7 +10942,20 @@ pub(super) mod sidebar {
         let tab = workspace.tabs.get(workspace.active_tab_index)?;
         let pane_group = tab.pane_group.as_ref(app);
         let (status, terminal_view_id) = tab_status(tab, &workspace.tmux_agent_terminals, app);
-        let title = tab_title(tab, workspace, app).unwrap_or_else(|| "New session".to_owned());
+        // Harp: an unrenamed tab's header reads what its sidebar row does, marks included.
+        let title = tab_title(tab, workspace, app)
+            .or_else(|| {
+                let terminal_view = pane_group.active_session_view(app)?;
+                let group = tab
+                    .group_id
+                    .and_then(|id| workspace.tab_groups.get(&id))
+                    .and_then(|group| group.name.clone());
+                let title = terminal_title(terminal_view.as_ref(app), app);
+                let title = strip_group_prefix(&title, group.as_deref()).to_owned();
+                let title = with_family_mark(title, Some(terminal_view.id()), app);
+                Some(without_agent_glyph(&title).to_owned())
+            })
+            .unwrap_or_else(|| "New session".to_owned());
         let path = workspace
             .tmux_tab_paths
             .get(&tab.pane_group.id())
