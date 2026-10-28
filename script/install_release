@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Installs a published Harp release into /Applications, no checkout or build needed:
+#
+#   curl -fsSL https://raw.githubusercontent.com/pravnyadv/harp/main/script/install_release | bash
+#   script/install_release [<tag>]     # default: the latest release
+#
+# The DMG is fetched with curl, which (unlike a browser) does not mark it quarantined, so
+# Gatekeeper does not block the first launch of an ad hoc signed build. The installed copy being
+# replaced goes to the Trash.
+#
+# Environment:
+#   HARP_REPO  GitHub repo to install from (default pravnyadv/harp).
+set -euo pipefail
+
+REPO="${HARP_REPO:-pravnyadv/harp}"
+TAG="${1:-}"
+APP=/Applications/Harp.app
+
+if pgrep -qf "^$APP/Contents/MacOS/"; then
+  echo "Harp is running; quit it (Cmd+Q) and run this again." >&2
+  exit 1
+fi
+
+if [[ -n "$TAG" ]]; then
+  api="https://api.github.com/repos/$REPO/releases/tags/$TAG"
+else
+  api="https://api.github.com/repos/$REPO/releases/latest"
+fi
+url="$(curl -fsSL "$api" | grep -o '"browser_download_url": *"[^"]*/Harp-[^"]*\.dmg"' | sed -E 's/.*"(https[^"]*)"/\1/' | head -1)"
+[[ -n "$url" ]] || { echo "no Harp-*.dmg asset in $api" >&2; exit 1; }
+
+work="$(mktemp -d)"
+mountpoint="$work/mnt"
+cleanup() {
+  hdiutil detach -quiet "$mountpoint" 2>/dev/null || true
+  rm -rf "$work"
+}
+trap cleanup EXIT
+
+echo "Downloading $url"
+curl -fL --progress-bar -o "$work/Harp.dmg" "$url"
+hdiutil attach -quiet -nobrowse -readonly -mountpoint "$mountpoint" "$work/Harp.dmg"
+codesign --verify --deep --strict "$mountpoint/Harp.app"
+
+if [[ -d "$APP" ]]; then
+  old="$HOME/.Trash/Harp-replaced-$(date +%Y%m%d-%H%M%S).app"
+  mv "$APP" "$old"
+  echo "Previous Harp moved to $old"
+fi
+ditto "$mountpoint/Harp.app" "$APP"
+codesign --verify --deep --strict "$APP"
+
+echo "Installed $(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Contents/Info.plist") from $url"
+echo "Open Harp from the Dock or Launchpad."
