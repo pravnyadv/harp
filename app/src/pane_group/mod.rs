@@ -1720,10 +1720,13 @@ impl PaneGroup {
                 // Harp: queue a resume of the Claude Code session that was live here when Harp last
                 // saved. The workspace starts the tab in view first; see `take_pending_agent_resumes`.
                 if *GeneralSettings::as_ref(ctx).resume_agent_sessions.value()
-                    && let Some(session_id) = resume_store::session_for(&uuid.0)
+                    && let Some(session_id) = resume_store::take_for_resume(&uuid.0)
                 {
                     PENDING_AGENT_RESUMES.with_borrow_mut(|pending| {
-                        pending.push((terminal_view.clone(), format!("claude --resume {session_id}")))
+                        pending.push((
+                            terminal_view.clone(),
+                            format!("claude --resume {session_id}"),
+                        ))
                     });
                 }
                 let terminal_view_id = terminal_view.id();
