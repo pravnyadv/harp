@@ -13,7 +13,7 @@ void warp_update_ime_state(WarpHostView *, BOOL);
 void warp_handle_drag_and_drop(WarpHostView *, NSArray *, NSPoint);
 void warp_handle_file_drag(WarpHostView *, NSPoint);
 void warp_handle_file_drag_exit(WarpHostView *);
-NSRect warp_ime_position(WarpHostView *, NSRect *);
+NSRect warp_cursor_rect(WarpHostView *);
 id warp_get_accessibility_contents(WarpHostView *);
 void warp_marked_text_updated(WarpHostView *, NSString *, NSRange);
 void warp_marked_text_cleared(WarpHostView *);
@@ -34,7 +34,22 @@ void warp_marked_text_cleared(WarpHostView *);
 
 @end
 
+// Draws only the system cursor accessories (dictation, Caps Lock, input source); clicks belong to
+// the host view underneath.
+API_AVAILABLE(macos(14.0))
+@interface WarpInsertionIndicator : NSTextInsertionIndicator
+@end
+
+@implementation WarpInsertionIndicator
+- (NSView *)hitTest:(NSPoint)point {
+    return nil;
+}
+@end
+
 @implementation WarpHostView {
+    // Not retained: the view hierarchy owns it once added as a subview.
+    NSView *insertionIndicator;
+
     // The windowState is managed on the Rust side.
     // Note Rust expects this name even though we are not a window.
     void *windowState;
@@ -440,15 +455,72 @@ void warp_marked_text_cleared(WarpHostView *);
 - (void)doCommandBySelector:(SEL)selector {
 }
 
+// The active cursor's rect in view coordinates, or NSZeroRect when no view has a cursor.
+- (NSRect)caretRect {
+    if (!self.readyForWarp) {
+        return NSZeroRect;
+    }
+    NSRect rect = warp_cursor_rect(self);
+    if (NSIsEmptyRect(rect)) {
+        return NSZeroRect;
+    }
+    rect.origin.y = NSHeight(self.bounds) - NSMaxY(rect);
+    return rect;
+}
+
+- (NSRect)screenRectFromViewRect:(NSRect)rect {
+    return [self.window convertRectToScreen:[self convertRect:rect toView:nil]];
+}
+
 - (NSRect)firstRectForCharacterRange:(NSRange)range
                          actualRange:(nullable NSRangePointer)actualRange {
-    NSWindow *window = self.window;
-    if (self.readyForWarp) {
-        NSRect contentRect = [window contentRectForFrameRect:[window frame]];
-        NSRect rect = warp_ime_position(self, &contentRect);
-        return rect;
-    } else {
+    if (!self.readyForWarp) {
         return NSZeroRect;
+    }
+    NSRect caret = [self caretRect];
+    if (NSIsEmptyRect(caret)) {
+        caret = NSMakeRect(0, NSHeight(self.bounds), 0, 0);
+    }
+    return [self screenRectFromViewRect:caret];
+}
+
+- (NSRect)unionRectInVisibleSelectedRange {
+    return [self screenRectFromViewRect:[self caretRect]];
+}
+
+- (NSRect)documentVisibleRect {
+    return [self screenRectFromViewRect:self.visibleRect];
+}
+
+- (void)updateInsertionIndicatorAsync {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [self updateInsertionIndicator];
+    });
+}
+
+// Keeps the system insertion indicator on the cursor so macOS draws the dictation and other
+// cursor accessories there. Its own caret is clear because Warp renders the cursor itself.
+- (void)updateInsertionIndicator {
+    if (@available(macOS 14.0, *)) {
+        NSRect caret = [self caretRect];
+        if (insertionIndicator == nil) {
+            if (NSIsEmptyRect(caret)) {
+                return;
+            }
+            WarpInsertionIndicator *indicator =
+                [[WarpInsertionIndicator alloc] initWithFrame:caret];
+            indicator.color = [NSColor clearColor];
+            [self addSubview:indicator];
+            [indicator release];
+            insertionIndicator = indicator;
+        }
+        WarpInsertionIndicator *indicator = (WarpInsertionIndicator *)insertionIndicator;
+        if (NSIsEmptyRect(caret)) {
+            indicator.displayMode = NSTextInsertionIndicatorDisplayModeHidden;
+        } else {
+            indicator.frame = caret;
+            indicator.displayMode = NSTextInsertionIndicatorDisplayModeAutomatic;
+        }
     }
 }
 
