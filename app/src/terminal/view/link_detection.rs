@@ -6,6 +6,7 @@ use warpui::platform::Cursor;
 
 use crate::terminal::TerminalModel;
 use crate::terminal::model::RespectObfuscatedSecrets;
+use crate::terminal::model::grid::RespectDisplayedOutput;
 use crate::terminal::model::grid::grid_handler::Link;
 use crate::terminal::model::index::Point;
 use crate::terminal::model::terminal_model::{WithinBlock, WithinModel};
@@ -154,6 +155,40 @@ impl GridHighlightedLink {
             GridHighlightedLink::Hyperlink { .. } => "Open link",
         }
     }
+
+    fn link(&self) -> WithinModel<Link> {
+        match self {
+            GridHighlightedLink::Url(link) | GridHighlightedLink::Hyperlink { link, .. } => {
+                link.clone()
+            }
+            #[cfg(feature = "local_fs")]
+            GridHighlightedLink::File(file_link) => {
+                let link = file_link.get_inner().link.clone();
+                file_link.clone().replace_inner(link)
+            }
+        }
+    }
+
+    /// The text the link currently covers, or `None` when its block or grid is gone.
+    fn text(&self, model: &TerminalModel) -> Option<String> {
+        let link = self.link();
+        let respect_displayed_output = match link {
+            WithinModel::AltScreen(_) => RespectDisplayedOutput::No,
+            WithinModel::BlockList(_) => RespectDisplayedOutput::Yes,
+        };
+        link.read_from_grid(model, |grid, link| {
+            let (start, end) = link.range.clone().into_inner();
+            Ok(grid.bounds_to_string(
+                start,
+                end,
+                false, /* include_esc_sequences */
+                RespectObfuscatedSecrets::No,
+                false, /* force_secrets_obfuscated */
+                respect_displayed_output,
+            ))
+        })
+        .ok()
+    }
 }
 
 impl Serialize for GridHighlightedLink {
@@ -225,6 +260,9 @@ impl TryFrom<GridHighlightedLink> for WithinBlock<Link> {
 #[derive(Debug, Default)]
 pub struct HighlightedLinkOption {
     inner: Option<GridHighlightedLink>,
+    /// The text under `inner` when it was highlighted. Programs that redraw in place (such as
+    /// Claude Code) replace it without the mouse moving, so the range alone goes stale.
+    text: Option<String>,
     /// True if the underlying content has changed such that the link may no longer be valid.
     invalidated: bool,
 }
@@ -319,6 +357,7 @@ impl HighlightedLinkOption {
                 }
             },
         }
+        self.text = link.text(model);
         self.inner = Some(link);
     }
 
@@ -328,7 +367,21 @@ impl HighlightedLinkOption {
         model.block_list_mut().clear_smart_select_override();
         model.alt_screen_mut().clear_smart_select_override();
         self.invalidated = false;
+        self.text = None;
         self.inner.take()
+    }
+
+    /// Removes the highlight if the text under it is no longer the link that was highlighted,
+    /// returning whether it did.
+    pub fn take_if_text_changed(&mut self, model: &mut TerminalModel) -> bool {
+        let changed = self
+            .inner
+            .as_ref()
+            .is_some_and(|link| link.text(model) != self.text);
+        if changed {
+            self.take(model);
+        }
+        changed
     }
 
     pub fn invalidate(&mut self) {
