@@ -5962,9 +5962,13 @@ fn test_vertical_tabs_full_tab_menu_setting_switches_tab_menu() {
         };
 
         workspace.read(&app, |workspace, ctx| {
-            let items = tab_menu(workspace, ctx);
+            let mut items = tab_menu(workspace, ctx);
+            // The sidebar's own "Pin" (Warp's tab pin for a tab without a tmux session) leads the
+            // menu, so Warp's "Pin tab" does not repeat it.
+            assert!(!menu_has(&items, "Pin tab"));
+            workspace.add_sidebar_pin_menu_item(0, &mut items, ctx);
+            assert!(items[0].is_approximately_same_item_as(&MenuItemFields::new("Pin").into_item()));
             for label in [
-                "Pin tab",
                 "Mark as unread",
                 "Mark inactive",
                 MOVE_TO_GROUP_LABEL,
@@ -5992,6 +5996,41 @@ fn test_vertical_tabs_full_tab_menu_setting_switches_tab_menu() {
             for (item, expected) in items.iter().zip(&expected) {
                 assert!(item.is_approximately_same_item_as(expected));
             }
+        });
+    });
+}
+
+/// Without the tmux integration a tab pins with Warp's own tab pin and lands in the framed
+/// sidebar's "Pinned" section; unpinning takes it out again.
+#[test]
+fn test_tab_without_tmux_session_pins_to_the_sidebar() {
+    let _vertical_tabs_guard = FeatureFlag::VerticalTabs.override_enabled(true);
+    let _pinned_tabs_guard = FeatureFlag::PinnedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        enable_framed_sidebar(&mut app);
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+        });
+        workspace.read(&app, |workspace, _| {
+            assert!(workspace.sidebar_pinned_tabs().is_empty());
+        });
+
+        workspace.update(&mut app, |workspace, ctx| workspace.pin_tab(1, ctx));
+        workspace.read(&app, |workspace, ctx| {
+            assert_eq!(workspace.sidebar_pinned_tabs(), vec![0]);
+            let mut items = Vec::new();
+            workspace.add_sidebar_pin_menu_item(0, &mut items, ctx);
+            assert!(
+                items[0].is_approximately_same_item_as(&MenuItemFields::new("Unpin").into_item())
+            );
+        });
+
+        workspace.update(&mut app, |workspace, ctx| workspace.unpin_tab(0, ctx));
+        workspace.read(&app, |workspace, _| {
+            assert!(workspace.sidebar_pinned_tabs().is_empty());
         });
     });
 }
@@ -6181,5 +6220,52 @@ fn test_tmux_adopt_does_nothing_while_the_integration_is_off() {
             assert_eq!(workspace.tabs.len(), tabs_before);
         });
         assert!(unset.borrow().is_empty());
+    });
+}
+
+/// 0.1.3's Panes view opened this field on a double-click, prefilled with the terminal's live
+/// title ("✳ Claude Code"). Enter or a click away on the untouched field stored that title as a
+/// fixed pane name, which later hid the tab's own name in the Tabs view row.
+#[test]
+fn test_unchanged_pane_rename_does_not_pin_the_terminal_title() {
+    let _vertical_tabs_guard = FeatureFlag::VerticalTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            let pane_group = workspace.active_tab_pane_group();
+            let locator = PaneViewLocator {
+                pane_group_id: pane_group.id(),
+                pane_id: pane_group.as_ref(ctx).pane_id_from_index(0).unwrap(),
+            };
+            let configuration = pane_group
+                .as_ref(ctx)
+                .pane_by_id(locator.pane_id)
+                .unwrap()
+                .pane_configuration();
+            configuration.update(ctx, |configuration, ctx| {
+                configuration.set_title("✳ Claude Code", ctx);
+            });
+
+            workspace.rename_pane(locator, ctx);
+            // Claude Code animates its title while the field is open.
+            configuration.update(ctx, |configuration, ctx| {
+                configuration.set_title("⠂ Claude Code", ctx);
+            });
+            workspace.finish_pane_rename(ctx);
+            assert_eq!(configuration.as_ref(ctx).custom_vertical_tabs_title(), None);
+
+            workspace.rename_pane(locator, ctx);
+            workspace.pane_rename_editor.update(ctx, |editor, ctx| {
+                editor.set_buffer_text("Secure inbox", ctx);
+            });
+            workspace.finish_pane_rename(ctx);
+            assert_eq!(
+                configuration.as_ref(ctx).custom_vertical_tabs_title(),
+                Some("Secure inbox")
+            );
+        });
     });
 }
