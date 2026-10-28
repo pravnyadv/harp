@@ -1,20 +1,26 @@
 #!/usr/bin/env bash
 # Builds a signed Harp release for macOS: release bundle, Developer ID signature with the
 # hardened runtime, DMG. Notarization is a separate step that only runs with --notarize.
+# Without a Developer ID the bundle is signed ad hoc: it runs on other Macs once the user allows
+# it under System Settings > Privacy & Security, or clears the quarantine with
+# `xattr -dr com.apple.quarantine /Applications/Harp.app`.
 #
-#   script/release_macos [--host <ssh-host>] [--universal] [--skip-build] [--notarize] [--dry-run]
+#   script/release_macos [--host <ssh-host>] [--universal] [--skip-build] [--notarize] [--publish]
+#                        [--dry-run]
 #
 # --host        Build on another Mac over ssh (the tree at HEAD is copied there with git archive,
 #               the bundle is copied back). Signing always happens here, where the keychain is.
 # --universal   Build arm64 + x86_64 (default: arm64 only, about half the build time).
 # --skip-build  Reuse dist/Harp.app from an earlier run and only sign and package.
-# --notarize    Submit the DMG to Apple, wait, staple and validate. Without it nothing leaves
-#               this machine.
+# --notarize    Submit the DMG to Apple, wait, staple and validate. Needs a Developer ID.
+# --publish     Upload the DMG to a GitHub release tagged v<version>-<short sha> on the origin
+#               repo. Needs a clean tree whose HEAD is pushed. Without --notarize or --publish
+#               nothing leaves this machine.
 # --dry-run     Check the toolchain and the signing identity and print each step, run nothing.
 #
 # Environment:
 #   HARP_SIGN_IDENTITY  codesign identity. Default: the only "Developer ID Application" identity
-#                       in the keychain (fails if there is none or more than one).
+#                       in the keychain, or an ad hoc signature (-) if there is none.
 #   HARP_REMOTE_DIR     Work dir on --host, relative to its home (default Developer/_tmp/harp-release).
 #   HARP_REMOTE_PATH    PATH prefix on --host so cargo is found
 #                       (default /opt/homebrew/opt/rustup/bin:/opt/homebrew/bin:$HOME/.cargo/bin).
@@ -26,7 +32,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-HOST="" UNIVERSAL=false SKIP_BUILD=false NOTARIZE=false DRY_RUN=false
+HOST="" UNIVERSAL=false SKIP_BUILD=false NOTARIZE=false PUBLISH=false DRY_RUN=false
 while (($#)); do
   case "$1" in
     --host) HOST="${2:?--host needs an ssh host}"; shift 2 ;;
@@ -34,7 +40,8 @@ while (($#)); do
     --skip-build) SKIP_BUILD=true; shift ;;
     --notarize) NOTARIZE=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
-    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    --publish) PUBLISH=true; shift ;;
+    -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -68,14 +75,37 @@ if [[ -n "${HARP_SIGN_IDENTITY:-}" ]]; then
 else
   matches="$(security find-identity -v -p codesigning | grep '"Developer ID Application' || true)"
   count="$(printf '%s' "$matches" | grep -c . || true)"
-  if [[ "$count" != 1 ]]; then
-    echo "found $count Developer ID Application identities; set HARP_SIGN_IDENTITY" >&2
-    printf '%s\n' "$matches" >&2
-    exit 1
-  fi
-  IDENTITY="$(printf '%s' "$matches" | sed -E 's/.*"(.*)"/\1/')"
+  case "$count" in
+    0) IDENTITY="-" ;;
+    1) IDENTITY="$(printf '%s' "$matches" | sed -E 's/.*"(.*)"/\1/')" ;;
+    *)
+      echo "found $count Developer ID Application identities; set HARP_SIGN_IDENTITY" >&2
+      printf '%s\n' "$matches" >&2
+      exit 1
+      ;;
+  esac
 fi
-echo "signing identity: $IDENTITY"
+if [[ "$IDENTITY" == "-" ]]; then
+  echo "signing identity: ad hoc (no Developer ID Application identity in the keychain)"
+  [[ $NOTARIZE == false ]] || { echo "--notarize needs a Developer ID identity" >&2; exit 1; }
+else
+  echo "signing identity: $IDENTITY"
+fi
+
+if [[ $PUBLISH == true ]]; then
+  command -v gh >/dev/null || { echo "missing tool: gh" >&2; exit 1; }
+  # A release must point at a commit anyone can check out and rebuild.
+  if [[ -n "$(git status --porcelain)" ]]; then
+    echo "--publish needs a clean working tree" >&2
+    [[ $DRY_RUN == true ]] || exit 1
+  fi
+  if ! git branch -r --contains HEAD | grep -q '^ *origin/'; then
+    echo "--publish needs HEAD pushed to origin" >&2
+    [[ $DRY_RUN == true ]] || exit 1
+  fi
+  REPO="$(git remote get-url origin | sed -E 's#^(git@github\.com:|https://github\.com/)##; s#\.git$##')"
+  echo "release repo: $REPO"
+fi
 
 if [[ $NOTARIZE == true ]]; then
   if [[ -n "${NOTARY_PROFILE:-}" ]]; then
@@ -147,6 +177,19 @@ if [[ $NOTARIZE == true ]]; then
   run spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
 else
   step "Not notarized (pass --notarize). Gatekeeper will block this DMG on other Macs."
+fi
+
+# --- Publish (explicit) ----------------------------------------------------------------------
+if [[ $PUBLISH == true ]]; then
+  SHA="$(git rev-parse --short HEAD)"
+  TAG="v$VERSION-$SHA"
+  step "Publish GitHub release $TAG on $REPO"
+  NOTES="Built from $(git rev-parse HEAD)."
+  if [[ $NOTARIZE == false ]]; then
+    NOTES+=$'\n\n'"Not notarized. After copying Harp to Applications, allow it once under System Settings > Privacy & Security, or run \`xattr -dr com.apple.quarantine /Applications/Harp.app\`."
+  fi
+  run gh release create "$TAG" "$DMG" --repo "$REPO" --target "$(git rev-parse HEAD)" \
+    --title "Harp $VERSION ($SHA)" --notes "$NOTES"
 fi
 
 echo
