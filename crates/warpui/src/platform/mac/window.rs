@@ -203,7 +203,7 @@ impl platform::WindowManager for WindowManager {
     }
 
     fn active_cursor_position_updated(&self) {
-        // no-op on macOS
+        Window::update_insertion_indicator_on_active_window();
     }
 
     fn windowing_system(&self) -> Option<crate::windowing::System> {
@@ -717,13 +717,31 @@ impl Window {
         unsafe { msg_send![&*native_window, isModalPanel] }
     }
 
+    fn active_warp_window() -> Option<Retained<NSWindow>> {
+        let native_window = Self::key_window()?;
+        // SAFETY: `is_warp_window` is an FFI call into the WarpWindow class.
+        unsafe { is_warp_window(&native_window) }
+            .as_bool()
+            .then_some(native_window)
+    }
+
     pub fn close_ime_on_active_window() {
-        let Some(native_window) = Self::key_window() else {
+        if let Some(native_window) = Self::active_warp_window() {
+            Self::send_close_ime_msg(&native_window);
+        }
+    }
+
+    pub fn update_insertion_indicator_on_active_window() {
+        let Some(native_window) = Self::active_warp_window() else {
             return;
         };
-        // SAFETY: `is_warp_window` is an FFI call into the WarpWindow class.
-        if unsafe { is_warp_window(&native_window) }.as_bool() {
-            Self::send_close_ime_msg(&native_window);
+        // SAFETY: warp windows carry the window-state ivar, and the content view is a
+        // WarpHostView exposing the custom `updateInsertionIndicatorAsync` selector.
+        unsafe {
+            let state = get_window_state(as_objc_object(&native_window));
+            if let Some(view) = (*state.native_window).contentView() {
+                let _: () = msg_send![&*view, updateInsertionIndicatorAsync];
+            }
         }
     }
 
@@ -1388,32 +1406,28 @@ pub extern "C-unwind" fn warp_get_accessibility_contents(object: &mut Object) ->
     Retained::autorelease_return(NSString::from_str(accessibility_contents.as_str())).cast()
 }
 
+/// The active cursor's line rect in top-left-origin view coordinates, or a zero rect when no view
+/// has a cursor.
 #[unsafe(no_mangle)]
-pub extern "C-unwind" fn warp_ime_position(object: &mut Object, content_rect: NSRect) -> NSRect {
+pub extern "C-unwind" fn warp_cursor_rect(object: &mut Object) -> NSRect {
     let state = unsafe { get_window_state(object) };
 
     let cursor_info = app::callback_dispatcher()
         .for_window(&Window(state.clone()))
         .get_active_cursor_position();
 
-    let size = Vector2F::new(
-        content_rect.size.width as f32,
-        content_rect.size.height as f32,
-    );
-
-    NSRect {
-        origin: match cursor_info {
-            Some(cursor_info) => NSPoint {
-                x: content_rect.origin.x + cursor_info.position.origin_x() as f64,
-                y: content_rect.origin.y + (size.y() - cursor_info.position.origin_y()) as f64
-                    - (1.2 * cursor_info.font_size) as f64,
-            },
-            None => NSPoint {
-                x: content_rect.origin.x,
-                y: content_rect.origin.y + size.y() as f64,
-            },
-        },
-        size: NSSize::new(0., 0.),
+    match cursor_info {
+        Some(cursor_info) => NSRect::new(
+            NSPoint::new(
+                cursor_info.position.origin_x() as f64,
+                cursor_info.position.origin_y() as f64,
+            ),
+            NSSize::new(
+                cursor_info.position.width().max(1.) as f64,
+                (1.2 * cursor_info.font_size) as f64,
+            ),
+        ),
+        None => NSRect::ZERO,
     }
 }
 
