@@ -306,6 +306,17 @@ impl CLIAgentSession {
         )
     }
 
+    /// Whether a permission dialog this session reported through its hook is still open.
+    pub fn is_asking_permission(&self) -> bool {
+        matches!(
+            self.status,
+            CLIAgentSessionStatus::Blocked {
+                source: BlockedSource::PermissionRequest,
+                ..
+            }
+        )
+    }
+
     /// Clears state populated by `PermissionRequest`. Called whenever the
     /// session leaves the permission flow (the user replied, a blocking tool
     /// completed, a new prompt is submitted, or the session ends successfully)
@@ -808,6 +819,36 @@ impl CLIAgentSessionsModel {
     /// When this session's status last changed, as seen by this model.
     pub fn status_changed_at(&self, terminal_view_id: EntityId) -> Option<DateTime<Local>> {
         self.status_changed_at.get(&terminal_view_id).copied()
+    }
+
+    /// Ends the permission dialog that blocked this session at `asked_at`, as `PermissionReplied`
+    /// would. Claude Code fires no hook when the user answers one, so an allowed tool otherwise
+    /// stays on "needs you" until it finishes. A status change since `asked_at` wins.
+    pub fn permission_answered(
+        &mut self,
+        terminal_view_id: EntityId,
+        asked_at: DateTime<Local>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let Some(session) = self.sessions.get(&terminal_view_id) else {
+            return;
+        };
+        if !session.is_asking_permission()
+            || self.status_changed_at(terminal_view_id) != Some(asked_at)
+        {
+            return;
+        }
+        let event = CLIAgentEvent {
+            v: 1,
+            agent: session.agent,
+            event: CLIAgentEventType::PermissionReplied,
+            session_id: None,
+            cwd: None,
+            project: None,
+            payload: Default::default(),
+            source: CLIAgentEventSource::RichPlugin,
+        };
+        self.update_from_event(terminal_view_id, &event, ctx);
     }
 
     fn clear_provisional_work(&mut self, terminal_view_id: EntityId) {
