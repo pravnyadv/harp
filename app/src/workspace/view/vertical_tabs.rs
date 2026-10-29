@@ -61,6 +61,7 @@ use crate::tab::{
     SelectedTabColor, TAB_INDICATOR_SYNCED_COLOR, TabData, reveals_tab_shortcut_hints,
     tab_position_id,
 };
+use crate::terminal::cli_agent_sessions::event::codex_action_required_prefix;
 use crate::terminal::cli_agent_sessions::{BackgroundTasks, CLIAgentSessionsModel};
 use crate::terminal::session_settings::SessionSettings;
 use crate::terminal::view::TerminalViewState;
@@ -1173,9 +1174,14 @@ pub(super) fn summary_conversation_status_for_terminal(
 ) -> Option<ConversationStatus> {
     let cli_agent_session = CLIAgentSessionsModel::as_ref(app).session(terminal_view.id());
     if let Some(session) = cli_agent_session
-        .filter(|s| s.supports_rich_status())
+        .filter(|s| s.shows_status())
         .filter(|s| !matches!(s.agent, CLIAgent::Unknown))
     {
+        // Harp: an agent that has only started has no turn to call done; the row shows it as
+        // waiting for its first report (`agent_waiting_for_first_turn`).
+        if !session.session_context.had_activity {
+            return None;
+        }
         return Some(
             session
                 .status
@@ -1191,6 +1197,18 @@ pub(super) fn summary_conversation_status_for_terminal(
     (has_conversation || is_ambient)
         .then(|| terminal_view.selected_conversation_status_for_display(app))
         .flatten()
+}
+
+/// Harp: the terminal runs an agent whose plugin reported its start but nothing since, such as a
+/// Claude Code that was just opened. Its row shows the empty ring, not a finished turn's tick.
+pub(super) fn agent_waiting_for_first_turn(terminal_view: &TerminalView, app: &AppContext) -> bool {
+    CLIAgentSessionsModel::as_ref(app)
+        .session(terminal_view.id())
+        .is_some_and(|session| {
+            session.shows_status()
+                && !matches!(session.agent, CLIAgent::Unknown)
+                && !session.session_context.had_activity
+        })
 }
 
 /// Section titles (tab group names and "other") read as quiet grey labels, like Finder's sidebar.
@@ -1210,6 +1228,29 @@ fn section_title_padding() -> Padding {
 }
 
 /// "atlas-api" in the group "atlas" reads as "app": the section title already names the project.
+/// Claude Code and Codex put their own state in front of the terminal title: Claude a turning
+/// half-disc (◐ ◑ ◒ ◓) while it works and ✳ when idle, Codex a turning braille character. The row
+/// shows that state with its own icon, so the glyph and its space go, as does Codex's blinking
+/// "Action Required" in front of the task. Only for rows whose pane runs that agent; other titles
+/// keep every character.
+fn strip_agent_title_glyph(agent: CLIAgent, title: &str) -> &str {
+    if agent == CLIAgent::Codex
+        && let Some(prefix) = codex_action_required_prefix(title)
+    {
+        return &title[prefix.len()..];
+    }
+    let mut chars = title.chars();
+    let (Some(first), Some(' ')) = (chars.next(), chars.next()) else {
+        return title;
+    };
+    let is_glyph = match agent {
+        CLIAgent::Claude => matches!(first, '✳' | '◐' | '◑' | '◒' | '◓'),
+        CLIAgent::Codex => ('\u{2801}'..='\u{28FF}').contains(&first),
+        _ => false,
+    };
+    if is_glyph { chars.as_str() } else { title }
+}
+
 fn strip_group_prefix<'a>(title: &'a str, group_name: Option<&str>) -> &'a str {
     let Some(group_name) = group_name.filter(|name| !name.is_empty()) else {
         return title;
@@ -9141,7 +9182,9 @@ pub(super) mod sidebar {
 
     use super::{
         PaneProps, TypedPane, agent_tab_text_preference, preferred_agent_tab_titles,
-        render_inline_tab_rename_editor, resolved_terminal_working_directory, strip_group_prefix,
+        agent_waiting_for_first_turn, render_inline_tab_rename_editor,
+        resolved_terminal_working_directory, strip_agent_title_glyph,
+        strip_group_prefix,
         summary_conversation_status_for_terminal, terminal_agent_text, terminal_primary_line_data,
         terminal_title_fallback_font,
     };
@@ -9505,7 +9548,11 @@ pub(super) mod sidebar {
             let id = terminal_view.id();
             let status = match summary_conversation_status_for_terminal(terminal_view, app) {
                 Some(status) => status_from_conversation(&status),
-                None if tmux_agent_terminals.contains(&id) => RowStatus::Pending,
+                None if tmux_agent_terminals.contains(&id)
+                    || agent_waiting_for_first_turn(terminal_view, app) =>
+                {
+                    RowStatus::Pending
+                }
                 None => RowStatus::Shell,
             };
             if best.is_none_or(|(current, _)| status_rank(status) > status_rank(current)) {
@@ -9534,7 +9581,11 @@ pub(super) mod sidebar {
         let status = match summary_conversation_status_for_terminal(terminal_view, app) {
             _ if props.is_inactive => RowStatus::Idle,
             Some(status) => status_from_conversation(&status),
-            None if props.hosts_tmux_agent => RowStatus::Pending,
+            None if props.hosts_tmux_agent
+                || agent_waiting_for_first_turn(terminal_view, app) =>
+            {
+                RowStatus::Pending
+            }
             None => RowStatus::Shell,
         };
         (status, Some(terminal_view.id()))
@@ -9793,8 +9844,14 @@ pub(super) mod sidebar {
             return strip_group_prefix(title, props.group_name.as_deref()).to_owned();
         }
         if let TypedPane::Terminal(terminal_pane) = &props.typed {
-            let title = terminal_title(terminal_pane.terminal_view(app).as_ref(app), app);
-            return strip_group_prefix(&title, props.group_name.as_deref()).to_owned();
+            let terminal_view = terminal_pane.terminal_view(app).as_ref(app);
+            let title = terminal_title(terminal_view, app);
+            let text = strip_group_prefix(&title, props.group_name.as_deref());
+            let text = match CLIAgentSessionsModel::as_ref(app).session(terminal_view.id()) {
+                Some(session) => strip_agent_title_glyph(session.agent, text),
+                None => text,
+            };
+            return text.to_owned();
         }
         strip_group_prefix(props.displayed_title(), props.group_name.as_deref()).to_owned()
     }
@@ -11409,7 +11466,22 @@ pub(super) mod sidebar {
             (RowStatus::Done, Some(time)) => format!("Done · {time} ago"),
             (RowStatus::Idle, None) => "Inactive".to_owned(),
             (RowStatus::Idle, Some(time)) => format!("Inactive · {time}"),
-            (RowStatus::Shell | RowStatus::Pending, _) => String::new(),
+            (RowStatus::Pending, _) => {
+                // Harp: an agent that reported its start waits for a prompt; one that never
+                // reported (a tmux session older than Harp, Claude started elsewhere) has no status
+                // until it starts again in a Harp tab.
+                let started = terminal_view_id.is_some_and(|id| {
+                    CLIAgentSessionsModel::as_ref(app)
+                        .session(id)
+                        .is_some_and(|session| session.shows_status())
+                });
+                if started {
+                    "Ready".to_owned()
+                } else {
+                    "Restart the agent here for status".to_owned()
+                }
+            }
+            (RowStatus::Shell, _) => String::new(),
         };
         Some(CardInfo { title, path, state })
     }
