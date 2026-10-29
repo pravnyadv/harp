@@ -8,16 +8,30 @@ use sysinfo::{Pid, Process, ProcessesToUpdate, System};
 /// bash process in between.
 const MAX_DEPTH: usize = 4;
 
+/// A running Claude Code's registry entry.
 #[derive(serde::Deserialize)]
-struct Entry {
+#[serde(rename_all = "camelCase")]
+pub struct Session {
     pid: u32,
-    #[serde(rename = "sessionId")]
-    session_id: String,
+    pub session_id: String,
+    /// "busy", "idle", "shell", or "waiting" while a dialog asks the user.
+    status: Option<String>,
+    /// When `status` last changed (Unix ms).
+    status_updated_at: Option<u64>,
 }
 
-/// The session of the Claude process running under the shell `shell_pid`, if Claude registered
-/// one. A registry file whose pid now belongs to some other program is skipped.
-pub fn session_under(shell_pid: u32) -> Option<String> {
+impl Session {
+    /// Whether the dialog Claude waited on has closed since `since_ms`. No hook reports an
+    /// answered permission prompt, so this file is the only early sign of one.
+    pub fn left_dialog_since(&self, since_ms: u64) -> bool {
+        self.status.as_deref() != Some("waiting")
+            && self.status_updated_at.is_some_and(|at| at > since_ms)
+    }
+}
+
+/// The Claude process running under the shell `shell_pid`, if Claude registered it. A registry
+/// file whose pid now belongs to some other program is skipped.
+pub fn session_under(shell_pid: u32) -> Option<Session> {
     let dir = dirs::home_dir()?.join(".claude/sessions");
     let mut system = System::new();
     std::fs::read_dir(dir)
@@ -25,7 +39,7 @@ pub fn session_under(shell_pid: u32) -> Option<String> {
         .filter_map(Result::ok)
         .filter(|file| file.path().extension().is_some_and(|ext| ext == "json"))
         .filter_map(|file| {
-            serde_json::from_str::<Entry>(&std::fs::read_to_string(file.path()).ok()?).ok()
+            serde_json::from_str::<Session>(&std::fs::read_to_string(file.path()).ok()?).ok()
         })
         .find(|entry| {
             process(&mut system, entry.pid).is_some_and(|process| process.name() == "claude")
@@ -33,7 +47,6 @@ pub fn session_under(shell_pid: u32) -> Option<String> {
                     process(&mut system, pid)?.parent().map(Pid::as_u32)
                 })
         })
-        .map(|entry| entry.session_id)
 }
 
 fn process(system: &mut System, pid: u32) -> Option<&Process> {

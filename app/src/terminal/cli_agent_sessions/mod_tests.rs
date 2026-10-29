@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use warp_core::execution_mode::{AppExecutionMode, ExecutionMode};
 use warpui::r#async::Timer;
-use warpui::{App, EntityId};
+use warpui::{App, EntityId, ModelHandle};
 
 use super::event::{
     CLIAgentEvent, CLIAgentEventPayload, CLIAgentEventSource, CLIAgentEventType, parse_event,
@@ -2221,4 +2221,61 @@ fn a_denied_background_dialog_ends_when_no_background_work_is_left() {
     // Denied: no edit ever finishes, the agent winds down instead.
     session.apply_event(&background_report(0));
     assert_eq!(session.status, CLIAgentSessionStatus::Success);
+}
+
+fn session_asking_permission(app: &mut App) -> (ModelHandle<CLIAgentSessionsModel>, EntityId) {
+    let model = app.add_singleton_model(|_| CLIAgentSessionsModel::new());
+    let view_id = EntityId::new();
+    model.update(app, |m, ctx| {
+        m.set_session(
+            view_id,
+            cli_agent_session(CLIAgentSessionStatus::InProgress, true),
+            ctx,
+        );
+        m.update_from_event(
+            view_id,
+            &rich_event(CLIAgentEventType::PermissionRequest),
+            ctx,
+        );
+    });
+    (model, view_id)
+}
+
+#[test]
+fn an_answered_permission_dialog_goes_back_to_working() {
+    App::test((), |mut app| async move {
+        let (model, view_id) = session_asking_permission(&mut app);
+        let asked_at = model
+            .read(&app, |m, _| m.status_changed_at(view_id))
+            .unwrap();
+
+        model.update(&mut app, |m, ctx| {
+            m.permission_answered(view_id, asked_at, ctx)
+        });
+
+        model.read(&app, |m, _| {
+            assert_eq!(
+                m.session(view_id).unwrap().status,
+                CLIAgentSessionStatus::InProgress
+            );
+        });
+    });
+}
+
+#[test]
+fn an_answer_to_an_older_dialog_leaves_a_newer_one_open() {
+    App::test((), |mut app| async move {
+        let (model, view_id) = session_asking_permission(&mut app);
+        let asked_at = model
+            .read(&app, |m, _| m.status_changed_at(view_id))
+            .unwrap();
+
+        model.update(&mut app, |m, ctx| {
+            m.permission_answered(view_id, asked_at - chrono::Duration::seconds(1), ctx)
+        });
+
+        model.read(&app, |m, _| {
+            assert!(m.session(view_id).unwrap().is_asking_permission());
+        });
+    });
 }

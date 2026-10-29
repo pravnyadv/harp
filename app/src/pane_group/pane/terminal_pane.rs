@@ -475,6 +475,7 @@ impl PaneContent for TerminalPane {
             .shell_pid()
             .filter(|_| view_handle.as_ref(app).is_long_running())
             .and_then(claude_registry::session_under)
+            .map(|session| session.session_id)
             .or_else(|| {
                 CLIAgentSessionsModel::as_ref(app)
                     .session(view_handle.id())
