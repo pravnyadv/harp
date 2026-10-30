@@ -1482,16 +1482,16 @@ static CGPathRef create_circle(CGFloat w, CGFloat h, CGFloat radius) {
         CGRectMake(w / 2 - radius, h / 2 - radius, 2 * radius, 2 * radius), NULL);
 }
 
-// The halo around an agent's dot: a stroke in the dot's colour at 35% that grows from the dot's
-// edge to 3/8 of its width (3 pt on an 8 pt dot) and back every 1.6 s. Only a changed dot size
-// restarts it, so a resent list (a scroll, another row's status) keeps its phase.
+// The halo around an agent's dot: a stroke in the dot's colour at 28% that grows from the dot's
+// edge to 5/16 of its width (2.5 pt on an 8 pt dot) and back every 2.6 s. Only a changed dot
+// size restarts it, so a resent list (a scroll, another row's status) keeps its phase.
 static void layout_pulse(CALayer *holder, CAShapeLayer *halo, const double *rgba, CGFloat w,
                          CGFloat h) {
     halo.strokeColor =
-        [NSColor colorWithSRGBRed:rgba[0] green:rgba[1] blue:rgba[2] alpha:rgba[3] * 0.35].CGColor;
+        [NSColor colorWithSRGBRed:rgba[0] green:rgba[1] blue:rgba[2] alpha:rgba[3] * 0.28].CGColor;
     if ([[holder valueForKey:@"pulseSize"] doubleValue] == w) return;
     [holder setValue:@(w) forKey:@"pulseSize"];
-    CGFloat spread = w * 3 / 8;
+    CGFloat spread = w * 5 / 16;
     CGPathRef rest = create_circle(w, h, w / 2);
     CGPathRef grown = create_circle(w, h, w / 2 + spread / 2);
     halo.path = rest;
@@ -1504,7 +1504,7 @@ static void layout_pulse(CALayer *holder, CAShapeLayer *halo, const double *rgba
     width.toValue = @(spread);
     CAAnimationGroup *group = [CAAnimationGroup animation];
     group.animations = @[ path, width ];
-    group.duration = 0.8;
+    group.duration = 1.3;
     group.autoreverses = YES;
     group.repeatCount = HUGE_VALF;
     group.removedOnCompletion = NO;

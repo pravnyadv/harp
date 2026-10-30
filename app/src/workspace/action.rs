@@ -424,6 +424,8 @@ pub enum WorkspaceAction {
     ToggleVerticalTabsShowPrLink,
     ToggleVerticalTabsShowDiffStats,
     ToggleVerticalTabsShowDetailsOnHover,
+    /// Harp: flips the framed sidebar's agent indicator between the path dot and status colour.
+    ToggleSidebarIndicator,
     /// Closes the focused panel. This happens as an explicit action from the user.
     ClosePanel,
     CopyTextToClipboard(String),
@@ -1137,6 +1139,7 @@ impl WorkspaceAction {
             | ToggleVerticalTabsShowPrLink
             | ToggleVerticalTabsShowDiffStats
             | ToggleVerticalTabsShowDetailsOnHover
+            | ToggleSidebarIndicator
             | ToggleWelcomeTips
             | CopyTextToClipboard(_)
             | CopyCurrentPath
