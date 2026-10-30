@@ -504,6 +504,14 @@ debug-assertions = true
 [profile.rltoda]
 inherits = "release-lto-debug_assertions"
 
+# Harp: the release build `script/release_macos` makes locally. Incremental, so after a small
+# change only the changed parts of `warp` recompile, and with unpacked debug info, so no dSYM is
+# packed (`dsymutil` over the whole binary runs on one core, and Harp sends no crash reports).
+[profile.harp-release]
+inherits = "release"
+incremental = true
+split-debuginfo = "unpacked"
+
 # A profile tuned for the `oz` CLI tarball. The CLI is shipped over the network
 # and run headlessly, so we trade some compile time and a small amount of
 # runtime perf for a smaller binary by mirroring the size-leaning settings used
