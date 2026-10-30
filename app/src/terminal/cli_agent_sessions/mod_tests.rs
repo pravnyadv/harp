@@ -2382,6 +2382,57 @@ fn a_tool_event_after_the_turn_ended_leaves_a_registry_session_done() {
 }
 
 #[test]
+fn a_stop_after_a_registry_cancel_is_announced() {
+    App::test((), |mut app| async move {
+        let (model, view_id, changed) = claude_session_after(&mut app, &[]);
+        report(
+            &mut app,
+            &model,
+            view_id,
+            Activity::Idle,
+            changed + 10,
+            REGISTRY_HOOK_GRACE_MS,
+        );
+        let (sender, receiver) = async_channel::unbounded();
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&model, move |_, event: &CLIAgentSessionsModelEvent, _| {
+                if let CLIAgentSessionsModelEvent::StatusChanged {
+                    status, announce, ..
+                } = event
+                {
+                    let _ = sender.try_send((status.clone(), *announce));
+                }
+            });
+        });
+
+        model.update(&mut app, |m, ctx| {
+            m.update_from_event(view_id, &rich_event(CLIAgentEventType::Stop), ctx);
+        });
+
+        assert_eq!(
+            receiver.try_recv().ok(),
+            Some((CLIAgentSessionStatus::Success, true))
+        );
+    });
+}
+
+#[test]
+fn a_cancel_window_armed_before_the_first_reading_is_dropped() {
+    App::test((), |mut app| async move {
+        let (model, view_id, changed) = claude_session_after(&mut app, &[]);
+        model.update(&mut app, |m, ctx| {
+            m.observe_ctrl_c_write_with_window(view_id, TEST_WINDOW, ctx);
+        });
+
+        report(&mut app, &model, view_id, Activity::Busy, changed, 0);
+
+        assert!(!model.read(&app, |m, _| {
+            m.has_pending_or_resolved_ctrl_c_cancel(view_id)
+        }));
+    });
+}
+
+#[test]
 fn title_state_reads_the_agents_own_glyph_only() {
     use super::event::{TitleState, title_state};
     assert_eq!(

@@ -727,6 +727,9 @@ pub struct CLIAgentSessionsModel {
     /// WarpOss: sessions shown as "needs you" because Claude Code's own session file says it
     /// waits on a dialog that sends no hook (`set_external_wait`).
     external_waits: HashMap<EntityId, ExternalWait>,
+    /// Harp: sessions `apply_claude_activity` ended as interrupted. Claude sends no stop for an
+    /// interrupt, so a stop that still comes ends the turn normally, announced like one.
+    registry_cancels: HashSet<EntityId>,
 }
 
 /// A "needs you" set from Claude Code's session file, and what it replaced.
@@ -756,6 +759,7 @@ impl CLIAgentSessionsModel {
             next_report_wait_token: 0,
             background_hook_seen: false,
             external_waits: HashMap::new(),
+            registry_cancels: HashSet::new(),
         }
     }
 
@@ -867,12 +871,18 @@ impl CLIAgentSessionsModel {
             .status_changed_at(terminal_view_id)
             .and_then(|at| u64::try_from(at.timestamp_millis()).ok())
             .unwrap_or(0);
+        if !self
+            .sessions
+            .get(&terminal_view_id)
+            .is_some_and(|session| session.agent == CLIAgent::Claude)
+        {
+            return;
+        }
+        // Keys no longer cancel a registry session, so neither does a window armed before.
+        self.abort_pending_cancel(terminal_view_id);
         let Some(session) = self.sessions.get_mut(&terminal_view_id) else {
             return;
         };
-        if session.agent != CLIAgent::Claude {
-            return;
-        }
         session.session_context.status_from_registry = true;
         if since_ms <= changed_ms {
             return;
@@ -913,7 +923,11 @@ impl CLIAgentSessionsModel {
             // No stop came for this turn: the user interrupted it.
             (Activity::Idle, _) => CLIAgentSessionStatus::Cancelled,
         };
-        self.abort_pending_cancel(terminal_view_id);
+        if status == CLIAgentSessionStatus::Cancelled {
+            self.registry_cancels.insert(terminal_view_id);
+        } else {
+            self.registry_cancels.remove(&terminal_view_id);
+        }
         self.external_waits.remove(&terminal_view_id);
         self.change_status(terminal_view_id, status, ctx);
     }
@@ -1088,6 +1102,7 @@ impl CLIAgentSessionsModel {
         self.clear_provisional_work(terminal_view_id);
         self.status_changed_at.remove(&terminal_view_id);
         self.external_waits.remove(&terminal_view_id);
+        self.registry_cancels.remove(&terminal_view_id);
         if let Some(session) = self.sessions.remove(&terminal_view_id) {
             ctx.emit(CLIAgentSessionsModelEvent::Ended {
                 terminal_view_id,
@@ -1172,8 +1187,12 @@ impl CLIAgentSessionsModel {
             session.apply_event(event)
         };
         // An event that changes the status ends a wait read from the session file.
+        let mut announced_from = previous_status.clone();
         if new_status.is_some() {
             self.external_waits.remove(&terminal_view_id);
+            if self.registry_cancels.remove(&terminal_view_id) {
+                announced_from = CLIAgentSessionStatus::InProgress;
+            }
         }
         let agent = session.agent;
         // WarpOss: a stop that came before its turn's hook count ends quietly and waits. The next
@@ -1234,7 +1253,7 @@ impl CLIAgentSessionsModel {
         }
         if let Some(new_status) = new_status {
             let announce = status_change_is_announced(
-                &previous_status,
+                &announced_from,
                 had_background_work,
                 &new_status,
                 session.session_context.running_background_tasks().is_some(),
@@ -1577,6 +1596,7 @@ impl CLIAgentSessionsModel {
         self.abort_pending_cancel(terminal_view_id);
         self.ctrl_c_cancel_state.remove(&terminal_view_id);
         self.clear_provisional_work(terminal_view_id);
+        self.registry_cancels.remove(&terminal_view_id);
         self.status_changed_at.insert(terminal_view_id, Local::now());
         if let Some(old) = self.sessions.insert(terminal_view_id, session) {
             ctx.emit(CLIAgentSessionsModelEvent::Ended {
