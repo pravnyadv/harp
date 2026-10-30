@@ -1608,6 +1608,10 @@ impl Workspace {
 #[cfg(not(target_family = "wasm"))]
 const CLAUDE_WAIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// How often Claude Code's registry is read for what each Claude tab is doing.
+#[cfg(not(target_family = "wasm"))]
+const CLAUDE_REGISTRY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
 #[cfg(not(target_family = "wasm"))]
 impl Workspace {
     /// Every 2 s while the framed sidebar and the tmux integration are on, shows "needs you" for
@@ -1619,7 +1623,6 @@ impl Workspace {
             |me, _, ctx| {
                 me.sync_claude_notices(ctx);
                 me.poll_claude_waits(ctx);
-                me.poll_answered_permissions(ctx);
                 me.schedule_claude_wait_poll(ctx);
             },
         );
@@ -1657,11 +1660,22 @@ impl Workspace {
         );
     }
 
-    /// Ends "needs you" for tabs whose permission dialog Claude Code's registry shows answered.
-    fn poll_answered_permissions(&mut self, ctx: &mut ViewContext<Self>) {
+    /// Every second, brings each Claude tab's status in line with what Claude Code's registry says
+    /// it is doing (`CLIAgentSessionsModel::apply_claude_activity`).
+    pub(super) fn schedule_claude_registry_poll(&mut self, ctx: &mut ViewContext<Self>) {
+        ctx.spawn(
+            warpui::r#async::Timer::after(CLAUDE_REGISTRY_POLL_INTERVAL),
+            |me, _, ctx| {
+                me.poll_claude_registry(ctx);
+                me.schedule_claude_registry_poll(ctx);
+            },
+        );
+    }
+
+    fn poll_claude_registry(&mut self, ctx: &mut ViewContext<Self>) {
         use crate::terminal::cli_agent_sessions::claude_registry;
         let sessions = CLIAgentSessionsModel::as_ref(ctx);
-        let asking: Vec<_> = self
+        let claude: Vec<(EntityId, u32)> = self
             .tabs
             .iter()
             .flat_map(|tab| {
@@ -1670,41 +1684,40 @@ impl Workspace {
             .filter(|(terminal_view_id, _)| {
                 sessions
                     .session(*terminal_view_id)
-                    .is_some_and(|session| session.is_asking_permission())
-            })
-            .filter_map(|(terminal_view_id, shell_pid)| {
-                Some((
-                    terminal_view_id,
-                    shell_pid,
-                    sessions.status_changed_at(terminal_view_id)?,
-                ))
+                    .is_some_and(|session| session.agent == crate::terminal::CLIAgent::Claude)
             })
             .collect();
-        if asking.is_empty() {
+        if claude.is_empty() {
             return;
         }
         ctx.spawn(
             async move {
                 tokio::task::spawn_blocking(move || {
-                    asking
+                    let shell_pids: Vec<u32> = claude.iter().map(|(_, pid)| *pid).collect();
+                    let found = claude_registry::sessions_under(&shell_pids);
+                    claude
                         .into_iter()
-                        .filter(|(_, shell_pid, asked_at)| {
-                            let asked_ms = u64::try_from(asked_at.timestamp_millis()).unwrap_or(0);
-                            claude_registry::session_under(*shell_pid)
-                                .is_some_and(|session| session.left_dialog_since(asked_ms))
+                        .filter_map(|(terminal_view_id, pid)| {
+                            Some((terminal_view_id, found.get(&pid)?.activity()?))
                         })
-                        .map(|(terminal_view_id, _, asked_at)| (terminal_view_id, asked_at))
                         .collect::<Vec<_>>()
                 })
                 .await
             },
-            |_, answered, ctx| {
-                let Ok(answered) = answered else {
+            |_, readings, ctx| {
+                let Ok(readings) = readings else {
                     return;
                 };
+                let now_ms = u64::try_from(chrono::Local::now().timestamp_millis()).unwrap_or(0);
                 CLIAgentSessionsModel::handle(ctx).update(ctx, |model, ctx| {
-                    for (terminal_view_id, asked_at) in answered {
-                        model.permission_answered(terminal_view_id, asked_at, ctx);
+                    for (terminal_view_id, (activity, since_ms)) in readings {
+                        model.apply_claude_activity(
+                            terminal_view_id,
+                            activity,
+                            since_ms,
+                            now_ms,
+                            ctx,
+                        );
                     }
                 });
             },

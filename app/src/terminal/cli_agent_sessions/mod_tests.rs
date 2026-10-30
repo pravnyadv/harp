@@ -4,13 +4,14 @@ use warp_core::execution_mode::{AppExecutionMode, ExecutionMode};
 use warpui::r#async::Timer;
 use warpui::{App, EntityId, ModelHandle};
 
+use super::claude_registry::Activity;
 use super::event::{
     CLIAgentEvent, CLIAgentEventPayload, CLIAgentEventSource, CLIAgentEventType, parse_event,
 };
 use super::{
     BlockedSource, CLIAgentInputEntrypoint, CLIAgentInputState, CLIAgentSession,
     CLIAgentSessionContext, CLIAgentSessionStatus, CLIAgentSessionsModel,
-    CLIAgentSessionsModelEvent,
+    CLIAgentSessionsModelEvent, REGISTRY_HOOK_GRACE_MS,
 };
 use crate::ai::blocklist::{InputConfig, InputType};
 use crate::terminal::CLIAgent;
@@ -2223,7 +2224,11 @@ fn a_denied_background_dialog_ends_when_no_background_work_is_left() {
     assert_eq!(session.status, CLIAgentSessionStatus::Success);
 }
 
-fn session_asking_permission(app: &mut App) -> (ModelHandle<CLIAgentSessionsModel>, EntityId) {
+/// A Claude session that reported `events` after a prompt, and when its status last changed.
+fn claude_session_after(
+    app: &mut App,
+    events: &[CLIAgentEventType],
+) -> (ModelHandle<CLIAgentSessionsModel>, EntityId, u64) {
     let model = app.add_singleton_model(|_| CLIAgentSessionsModel::new());
     let view_id = EntityId::new();
     model.update(app, |m, ctx| {
@@ -2232,51 +2237,198 @@ fn session_asking_permission(app: &mut App) -> (ModelHandle<CLIAgentSessionsMode
             cli_agent_session(CLIAgentSessionStatus::InProgress, true),
             ctx,
         );
-        m.update_from_event(
-            view_id,
-            &rich_event(CLIAgentEventType::PermissionRequest),
-            ctx,
-        );
+        m.update_from_event(view_id, &rich_event(CLIAgentEventType::PromptSubmit), ctx);
+        for event in events {
+            m.update_from_event(view_id, &rich_event(event.clone()), ctx);
+        }
     });
-    (model, view_id)
+    let changed_ms = model.read(app, |m, _| {
+        m.status_changed_at(view_id).unwrap().timestamp_millis() as u64
+    });
+    (model, view_id, changed_ms)
+}
+
+/// Applies a registry reading of `activity` since `since_ms`, taken `age_ms` later.
+fn report(
+    app: &mut App,
+    model: &ModelHandle<CLIAgentSessionsModel>,
+    view_id: EntityId,
+    activity: Activity,
+    since_ms: u64,
+    age_ms: u64,
+) -> CLIAgentSessionStatus {
+    model.update(app, |m, ctx| {
+        m.apply_claude_activity(view_id, activity, since_ms, since_ms + age_ms, ctx);
+    });
+    model.read(app, |m, _| m.session(view_id).unwrap().status.clone())
 }
 
 #[test]
-fn an_answered_permission_dialog_goes_back_to_working() {
+fn an_interrupted_turn_reads_cancelled_once_claude_reports_idle() {
     App::test((), |mut app| async move {
-        let (model, view_id) = session_asking_permission(&mut app);
-        let asked_at = model
-            .read(&app, |m, _| m.status_changed_at(view_id))
-            .unwrap();
+        let (model, view_id, changed) = claude_session_after(&mut app, &[]);
+        let status = report(
+            &mut app,
+            &model,
+            view_id,
+            Activity::Idle,
+            changed + 10,
+            REGISTRY_HOOK_GRACE_MS,
+        );
+        assert_eq!(status, CLIAgentSessionStatus::Cancelled);
+    });
+}
+
+#[test]
+fn a_fresh_idle_report_leaves_the_turn_to_its_stop_hook() {
+    App::test((), |mut app| async move {
+        let (model, view_id, changed) = claude_session_after(&mut app, &[]);
+        let status = report(&mut app, &model, view_id, Activity::Idle, changed + 10, 100);
+        assert_eq!(status, CLIAgentSessionStatus::InProgress);
+    });
+}
+
+#[test]
+fn an_answered_permission_dialog_goes_back_to_working_at_once() {
+    App::test((), |mut app| async move {
+        let (model, view_id, changed) =
+            claude_session_after(&mut app, &[CLIAgentEventType::PermissionRequest]);
+        let status = report(&mut app, &model, view_id, Activity::Busy, changed + 10, 0);
+        assert_eq!(status, CLIAgentSessionStatus::InProgress);
+    });
+}
+
+#[test]
+fn a_reading_from_before_the_last_hook_changes_nothing() {
+    App::test((), |mut app| async move {
+        let (model, view_id, changed) =
+            claude_session_after(&mut app, &[CLIAgentEventType::PermissionRequest]);
+        let status = report(
+            &mut app,
+            &model,
+            view_id,
+            Activity::Busy,
+            changed - 1_000,
+            REGISTRY_HOOK_GRACE_MS,
+        );
+        assert!(matches!(status, CLIAgentSessionStatus::Blocked { .. }));
+    });
+}
+
+#[test]
+fn a_turn_woken_without_a_prompt_reads_working() {
+    App::test((), |mut app| async move {
+        let (model, view_id, changed) = claude_session_after(&mut app, &[CLIAgentEventType::Stop]);
+        let status = report(&mut app, &model, view_id, Activity::Busy, changed + 10, 0);
+        assert_eq!(status, CLIAgentSessionStatus::InProgress);
+    });
+}
+
+#[test]
+fn a_dialog_no_hook_reports_reads_needs_you() {
+    App::test((), |mut app| async move {
+        let (model, view_id, changed) = claude_session_after(&mut app, &[]);
+        let status = report(
+            &mut app,
+            &model,
+            view_id,
+            Activity::Waiting(Some("permission prompt".to_owned())),
+            changed + 10,
+            REGISTRY_HOOK_GRACE_MS,
+        );
+        assert_eq!(
+            status,
+            CLIAgentSessionStatus::Blocked {
+                message: Some("permission prompt".to_owned()),
+                source: BlockedSource::NeedsInput,
+            }
+        );
+    });
+}
+
+#[test]
+fn esc_does_not_arm_a_cancel_once_the_registry_reports() {
+    App::test((), |mut app| async move {
+        let (model, view_id, changed) = claude_session_after(&mut app, &[]);
+        report(&mut app, &model, view_id, Activity::Busy, changed, 0);
 
         model.update(&mut app, |m, ctx| {
-            m.permission_answered(view_id, asked_at, ctx)
+            m.observe_ctrl_c_write_with_window(view_id, TEST_WINDOW, ctx);
+        });
+
+        assert!(!model.read(&app, |m, _| {
+            m.has_pending_or_resolved_ctrl_c_cancel(view_id)
+        }));
+    });
+}
+
+#[test]
+fn a_tool_event_after_the_turn_ended_leaves_a_registry_session_done() {
+    App::test((), |mut app| async move {
+        let (model, view_id, changed) = claude_session_after(&mut app, &[CLIAgentEventType::Stop]);
+        report(&mut app, &model, view_id, Activity::Idle, changed, 0);
+
+        model.update(&mut app, |m, ctx| {
+            m.update_from_event(view_id, &rich_event(CLIAgentEventType::ToolComplete), ctx);
         });
 
         model.read(&app, |m, _| {
             assert_eq!(
                 m.session(view_id).unwrap().status,
-                CLIAgentSessionStatus::InProgress
+                CLIAgentSessionStatus::Success
             );
         });
     });
 }
 
 #[test]
-fn an_answer_to_an_older_dialog_leaves_a_newer_one_open() {
+fn a_stop_after_a_registry_cancel_is_announced() {
     App::test((), |mut app| async move {
-        let (model, view_id) = session_asking_permission(&mut app);
-        let asked_at = model
-            .read(&app, |m, _| m.status_changed_at(view_id))
-            .unwrap();
+        let (model, view_id, changed) = claude_session_after(&mut app, &[]);
+        report(
+            &mut app,
+            &model,
+            view_id,
+            Activity::Idle,
+            changed + 10,
+            REGISTRY_HOOK_GRACE_MS,
+        );
+        let (sender, receiver) = async_channel::unbounded();
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&model, move |_, event: &CLIAgentSessionsModelEvent, _| {
+                if let CLIAgentSessionsModelEvent::StatusChanged {
+                    status, announce, ..
+                } = event
+                {
+                    let _ = sender.try_send((status.clone(), *announce));
+                }
+            });
+        });
 
         model.update(&mut app, |m, ctx| {
-            m.permission_answered(view_id, asked_at - chrono::Duration::seconds(1), ctx)
+            m.update_from_event(view_id, &rich_event(CLIAgentEventType::Stop), ctx);
         });
 
-        model.read(&app, |m, _| {
-            assert!(m.session(view_id).unwrap().is_asking_permission());
+        assert_eq!(
+            receiver.try_recv().ok(),
+            Some((CLIAgentSessionStatus::Success, true))
+        );
+    });
+}
+
+#[test]
+fn a_cancel_window_armed_before_the_first_reading_is_dropped() {
+    App::test((), |mut app| async move {
+        let (model, view_id, changed) = claude_session_after(&mut app, &[]);
+        model.update(&mut app, |m, ctx| {
+            m.observe_ctrl_c_write_with_window(view_id, TEST_WINDOW, ctx);
         });
+
+        report(&mut app, &model, view_id, Activity::Busy, changed, 0);
+
+        assert!(!model.read(&app, |m, _| {
+            m.has_pending_or_resolved_ctrl_c_cancel(view_id)
+        }));
     });
 }
 
