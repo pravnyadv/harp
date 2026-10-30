@@ -1408,6 +1408,9 @@ void order_front_without_focus(WarpWindow<WarpWindowProtocol> *window, NSPoint o
 // scrolls reach the app exactly as before. It keeps the last list it was given: the rects are
 // measured from the top but layers sit from the bottom, so every resize lays the rings out again
 // (the app resends only when the list itself changes).
+// Harp: a mark with a colour is an agent's dot instead, and its holder pulses a halo around it.
+static const NSUInteger kMarkStride = 12;
+
 @interface WarpRingOverlayView : NSView {
     NSData *_rings;
     BOOL _dark;
@@ -1425,20 +1428,20 @@ static void layout_working_rings(WarpRingOverlayView *overlay, const double *rec
 
 - (void)setRings:(const double *)rects count:(NSUInteger)count dark:(BOOL)dark {
     [_rings release];
-    _rings = [[NSData alloc] initWithBytes:rects length:count * 8 * sizeof(double)];
+    _rings = [[NSData alloc] initWithBytes:rects length:count * kMarkStride * sizeof(double)];
     _dark = dark;
     layout_working_rings(self, _rings.bytes, count, dark);
 }
 
 - (void)setFrameSize:(NSSize)size {
     [super setFrameSize:size];
-    NSUInteger count = _rings.length / (8 * sizeof(double));
+    NSUInteger count = _rings.length / (kMarkStride * sizeof(double));
     if (count > 0) layout_working_rings(self, _rings.bytes, count, _dark);
 }
 
 - (void)viewDidChangeBackingProperties {
     [super viewDidChangeBackingProperties];
-    NSUInteger count = _rings.length / (8 * sizeof(double));
+    NSUInteger count = _rings.length / (kMarkStride * sizeof(double));
     if (count > 0) layout_working_rings(self, _rings.bytes, count, _dark);
 }
 
@@ -1450,8 +1453,9 @@ static void layout_working_rings(WarpRingOverlayView *overlay, const double *rec
 
 static char kRingOverlayKey;
 
-// |rects|: eight numbers per ring, the icon rect then its visible part, in window points from the
-// top left. The app only calls this when the list changed. An empty list removes every ring.
+// |rects|: kMarkStride numbers per mark: the icon rect then its visible part, in window points
+// from the top left, then a pulse colour (sRGB r, g, b, a from 0 to 1; alpha 0 for a spinning
+// ring). The app only calls this when the list changed. An empty list removes every mark.
 void set_working_rings(id window, const double *rects, NSUInteger count, BOOL dark) {
     if (![window isKindOfClass:[NSWindow class]]) return;
     NSWindow *nsWindow = window;
@@ -1473,6 +1477,44 @@ void set_working_rings(id window, const double *rects, NSUInteger count, BOOL da
     [overlay setRings:rects count:count dark:dark];
 }
 
+static CGPathRef create_circle(CGFloat w, CGFloat h, CGFloat radius) {
+    return CGPathCreateWithEllipseInRect(
+        CGRectMake(w / 2 - radius, h / 2 - radius, 2 * radius, 2 * radius), NULL);
+}
+
+// The halo around an agent's dot: a stroke in the dot's colour at 35% that grows from the dot's
+// edge to 3/8 of its width (3 pt on an 8 pt dot) and back every 1.6 s. Only a changed dot size
+// restarts it, so a resent list (a scroll, another row's status) keeps its phase.
+static void layout_pulse(CALayer *holder, CAShapeLayer *halo, const double *rgba, CGFloat w,
+                         CGFloat h) {
+    halo.strokeColor =
+        [NSColor colorWithSRGBRed:rgba[0] green:rgba[1] blue:rgba[2] alpha:rgba[3] * 0.35].CGColor;
+    if ([[holder valueForKey:@"pulseSize"] doubleValue] == w) return;
+    [holder setValue:@(w) forKey:@"pulseSize"];
+    CGFloat spread = w * 3 / 8;
+    CGPathRef rest = create_circle(w, h, w / 2);
+    CGPathRef grown = create_circle(w, h, w / 2 + spread / 2);
+    halo.path = rest;
+    halo.lineWidth = 0;
+    CABasicAnimation *path = [CABasicAnimation animationWithKeyPath:@"path"];
+    path.fromValue = (id)rest;
+    path.toValue = (id)grown;
+    CABasicAnimation *width = [CABasicAnimation animationWithKeyPath:@"lineWidth"];
+    width.fromValue = @0;
+    width.toValue = @(spread);
+    CAAnimationGroup *group = [CAAnimationGroup animation];
+    group.animations = @[ path, width ];
+    group.duration = 0.8;
+    group.autoreverses = YES;
+    group.repeatCount = HUGE_VALF;
+    group.removedOnCompletion = NO;
+    group.timingFunction =
+        [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+    [halo addAnimation:group forKey:@"pulse"];
+    CGPathRelease(rest);
+    CGPathRelease(grown);
+}
+
 static void layout_working_rings(WarpRingOverlayView *overlay, const double *rects,
                                  NSUInteger count, BOOL dark) {
     NSWindow *nsWindow = overlay.window;
@@ -1487,31 +1529,44 @@ static void layout_working_rings(WarpRingOverlayView *overlay, const double *rec
         CGColorCreateSRGB(channel, channel, dark ? 0xEA / 255.0 : 0x3C / 255.0, 1.0);
     CGFloat scale = nsWindow ? nsWindow.backingScaleFactor : 2.0;
     for (NSUInteger i = 0; i < count; i++) {
-        const double *r = rects + i * 8;
+        const double *r = rects + i * kMarkStride;
         CGFloat x = r[0], y = r[1], w = r[2], h = r[3];
+        BOOL pulse = r[11] > 0;
+        NSString *kind = pulse ? @"pulse" : @"ring";
         CALayer *holder = i < holders.count ? holders[i] : nil;
-        CAShapeLayer *ring = (CAShapeLayer *)holder.sublayers.firstObject;
-        if (!holder) {
+        if (holder && ![holder.name isEqualToString:kind]) {
+            CALayer *fresh = [CALayer layer];
+            [host replaceSublayer:holder with:fresh];
+            holder = fresh;
+        } else if (!holder) {
             holder = [CALayer layer];
+            [host addSublayer:holder];
+        }
+        CAShapeLayer *ring = (CAShapeLayer *)holder.sublayers.firstObject;
+        if (!ring) {
+            holder.name = kind;
             ring = [CAShapeLayer layer];
             ring.fillColor = nil;
             ring.lineCap = kCALineCapRound;
             [holder addSublayer:ring];
-            [host addSublayer:holder];
         }
         holder.contentsScale = scale;
         ring.contentsScale = scale;
         // Layer space is y-up: the holder sits at the icon's rect flipped against the view height.
         holder.frame = CGRectMake(x, height - y - h, w, h);
         ring.frame = holder.bounds;
-        // Same geometry as working-arc.svg (16 px box, r 6.2, stroke 1.8): from twelve o'clock
-        // clockwise to nine.
-        CGMutablePathRef path = CGPathCreateMutable();
-        CGPathAddArc(path, NULL, w / 2, h / 2, w * 6.2 / 16, M_PI_2, -M_PI, true);
-        ring.path = path;
-        CGPathRelease(path);
-        ring.lineWidth = w * 1.8 / 16;
-        ring.strokeColor = color;
+        if (pulse) {
+            layout_pulse(holder, ring, r + 8, w, h);
+        } else {
+            // Same geometry as working-arc.svg (16 px box, r 6.2, stroke 1.8): from twelve
+            // o'clock clockwise to nine.
+            CGMutablePathRef path = CGPathCreateMutable();
+            CGPathAddArc(path, NULL, w / 2, h / 2, w * 6.2 / 16, M_PI_2, -M_PI, true);
+            ring.path = path;
+            CGPathRelease(path);
+            ring.lineWidth = w * 1.8 / 16;
+            ring.strokeColor = color;
+        }
         // A row half scrolled out shows only its visible part.
         CGFloat vx = r[4], vy = r[5], vw = r[6], vh = r[7];
         if (vw < w - 0.01 || vh < h - 0.01) {
@@ -1522,7 +1577,7 @@ static void layout_working_rings(WarpRingOverlayView *overlay, const double *rec
         } else {
             holder.mask = nil;
         }
-        if (![ring animationForKey:@"spin"]) {
+        if (!pulse && ![ring animationForKey:@"spin"]) {
             CABasicAnimation *spin = [CABasicAnimation animationWithKeyPath:@"transform.rotation.z"];
             spin.fromValue = @0;
             spin.toValue = @(-2 * M_PI);

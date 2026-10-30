@@ -21,6 +21,7 @@ use objc2_foundation::{
 };
 use objc2_metal::{MTLCopyAllDevices, MTLCreateSystemDefaultDevice, MTLDevice};
 use objc2_quartz_core::CAMetalLayer;
+use pathfinder_color::ColorU;
 use pathfinder_geometry::rect::RectF;
 use pathfinder_geometry::vector::{Vector2F, vec2f};
 use warpui_core::accessibility::AccessibilityContent;
@@ -29,7 +30,8 @@ use warpui_core::r#async::{Timer, executor};
 use warpui_core::event::ModifiersState;
 use warpui_core::platform::{
     self, FilePickerCallback, FilePickerConfiguration, FullscreenState, GraphicsBackend,
-    TerminationMode, WindowBounds, WindowFocusBehavior, WindowOptions, WindowStyle, file_picker,
+    TerminationMode, WindowBounds, WindowFocusBehavior, WindowOptions, WindowStyle, WorkingMark,
+    file_picker,
 };
 use warpui_core::rendering::GPUPowerPreference;
 use warpui_core::windowing::WindowCallbacks;
@@ -1053,8 +1055,8 @@ impl platform::Window for Window {
             .set_framed_sidebar_layout(framed, minimum_blur_radius_pixels, dark);
     }
 
-    fn set_working_rings(&self, rings: &[(RectF, RectF)], dark: bool) {
-        self.0.set_working_rings(rings, dark);
+    fn set_working_rings(&self, marks: &[WorkingMark], dark: bool) {
+        self.0.set_working_rings(marks, dark);
     }
 
     fn supports_working_rings(&self) -> bool {
@@ -1198,27 +1200,33 @@ impl WindowState {
         }
     }
 
-    fn set_working_rings(&self, rings: &[(RectF, RectF)], dark: bool) {
-        // Eight numbers per ring: the icon rect, then its visible part (x, y, width, height).
-        let flat: Vec<f64> = rings
+    fn set_working_rings(&self, marks: &[WorkingMark], dark: bool) {
+        // Twelve numbers per mark: the rect, its visible part (x, y, width, height), then the
+        // pulse colour (r, g, b, a from 0 to 1), all zero for a spinning ring.
+        let flat: Vec<f64> = marks
             .iter()
-            .flat_map(|(full, visible)| {
+            .flat_map(|mark| {
+                let pulse = mark.pulse.unwrap_or(ColorU::transparent_black()).to_f32();
                 [
-                    full.origin_x(),
-                    full.origin_y(),
-                    full.width(),
-                    full.height(),
-                    visible.origin_x(),
-                    visible.origin_y(),
-                    visible.width(),
-                    visible.height(),
+                    mark.rect.origin_x(),
+                    mark.rect.origin_y(),
+                    mark.rect.width(),
+                    mark.rect.height(),
+                    mark.visible.origin_x(),
+                    mark.visible.origin_y(),
+                    mark.visible.width(),
+                    mark.visible.height(),
+                    pulse.r(),
+                    pulse.g(),
+                    pulse.b(),
+                    pulse.a(),
                 ]
             })
             .map(f64::from)
             .collect();
-        // SAFETY: `set_working_rings` reads `count * 8` numbers from `flat` during the call.
+        // SAFETY: `set_working_rings` reads `count * 12` numbers from `flat` during the call.
         unsafe {
-            set_working_rings(self.window(), flat.as_ptr(), rings.len(), Bool::new(dark));
+            set_working_rings(self.window(), flat.as_ptr(), marks.len(), Bool::new(dark));
         }
     }
 
