@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::{Session, descends_from, session_under};
+use super::{Activity, Session, ancestors, session_under};
 
 fn parents(pairs: &[(u32, u32)]) -> impl FnMut(u32) -> Option<u32> {
     let parents: HashMap<u32, u32> = pairs.iter().copied().collect();
@@ -9,27 +9,23 @@ fn parents(pairs: &[(u32, u32)]) -> impl FnMut(u32) -> Option<u32> {
 
 #[test]
 fn claude_started_from_the_shell_descends_from_it() {
-    assert!(descends_from(200, 100, parents(&[(200, 100), (100, 1)])));
+    assert!(ancestors(200, parents(&[(200, 100), (100, 1)])).contains(&100));
 }
 
 #[test]
 fn claude_started_through_a_wrapper_script_descends_from_the_shell() {
-    assert!(descends_from(
-        300,
-        100,
-        parents(&[(300, 200), (200, 100), (100, 1)])
-    ));
+    assert!(ancestors(300, parents(&[(300, 200), (200, 100), (100, 1)])).contains(&100));
 }
 
 #[test]
 fn claude_in_another_pane_does_not_descend_from_the_shell() {
-    assert!(!descends_from(200, 100, parents(&[(200, 150), (150, 1)])));
+    assert!(!ancestors(200, parents(&[(200, 150), (150, 1)])).contains(&100));
 }
 
 #[test]
 fn ancestry_deeper_than_the_limit_is_not_followed() {
     let chain = [(6, 5), (5, 4), (4, 3), (3, 2), (2, 1)];
-    assert!(!descends_from(6, 1, parents(&chain)));
+    assert!(!ancestors(6, parents(&chain)).contains(&1));
 }
 
 #[test]
@@ -42,33 +38,44 @@ fn registry_entries_parse_from_claude_code_files() {
     assert_eq!(entry.session_id, "c90a34e6-dc8b-4f44-afdf-aaed71270f22");
 }
 
-fn session(status: &str, status_updated_at: u64) -> Session {
-    serde_json::from_str(&format!(
-        r#"{{"pid":1,"sessionId":"s","status":"{status}","statusUpdatedAt":{status_updated_at}}}"#
-    ))
-    .unwrap()
+fn activity(json_fields: &str) -> Option<(Activity, u64)> {
+    serde_json::from_str::<Session>(&format!(r#"{{"pid":1,"sessionId":"s",{json_fields}}}"#))
+        .unwrap()
+        .activity()
 }
 
 #[test]
-fn a_dialog_answered_after_it_was_reported_has_closed() {
-    assert!(session("busy", 2_000).left_dialog_since(1_000));
+fn a_running_turn_reads_busy() {
+    assert_eq!(
+        activity(r#""status":"busy","statusUpdatedAt":2000"#),
+        Some((Activity::Busy, 2_000))
+    );
 }
 
 #[test]
-fn a_dialog_still_waiting_has_not_closed() {
-    assert!(!session("waiting", 2_000).left_dialog_since(1_000));
+fn a_dialog_reads_waiting_with_its_label() {
+    assert_eq!(
+        activity(r#""status":"waiting","waitingFor":"permission prompt","statusUpdatedAt":5"#),
+        Some((Activity::Waiting(Some("permission prompt".to_owned())), 5))
+    );
 }
 
 #[test]
-fn work_from_before_the_dialog_was_reported_does_not_close_it() {
-    // Claude may report the dialog before its registry turns "waiting".
-    assert!(!session("busy", 500).left_dialog_since(1_000));
+fn background_shells_after_the_turn_read_idle() {
+    assert_eq!(
+        activity(r#""status":"shell","statusUpdatedAt":7"#),
+        Some((Activity::Idle, 7))
+    );
 }
 
 #[test]
-fn an_entry_without_a_status_never_closes_a_dialog() {
-    let entry: Session = serde_json::from_str(r#"{"pid":1,"sessionId":"s"}"#).unwrap();
-    assert!(!entry.left_dialog_since(0));
+fn an_unknown_or_undated_status_says_nothing() {
+    assert_eq!(
+        activity(r#""status":"compacting","statusUpdatedAt":7"#),
+        None
+    );
+    assert_eq!(activity(r#""status":"busy""#), None);
+    assert_eq!(activity(r#""waitingFor":"x""#), None);
 }
 
 #[test]

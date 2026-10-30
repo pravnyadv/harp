@@ -15,6 +15,7 @@ use warp_core::execution_mode::AppExecutionMode;
 use warpui::r#async::SpawnedFutureHandle;
 use warpui::{Entity, EntityId, ModelContext, ModelHandle, SingletonEntity};
 
+use self::claude_registry::Activity;
 use self::listener::CLIAgentSessionListener;
 use super::CLIAgent;
 use crate::ai::blocklist::InputConfig;
@@ -33,6 +34,9 @@ const PROVISIONAL_WORK_WINDOW: Duration = Duration::from_secs(60);
 const BACKGROUND_REPORT_WAIT: Duration = Duration::from_secs(4);
 
 const NEEDS_INPUT_STATUS_MESSAGE: &str = "Agent requires user input";
+/// Harp: how long Claude Code's registry must show a dialog or an ended turn before
+/// `apply_claude_activity` sets it over the hooks.
+const REGISTRY_HOOK_GRACE_MS: u64 = 1_000;
 
 /// What caused a session to become [`CLIAgentSessionStatus::Blocked`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,6 +174,10 @@ pub struct CLIAgentSessionContext {
     /// Harp: the agent runs without a status plugin, and its status comes from the terminal title
     /// it sets (see `CLIAgentEventSource::TerminalTitle`). A plugin event takes over for good.
     pub status_from_title: bool,
+    /// Harp: Claude Code's own registry reports on this session (`apply_claude_activity`), so
+    /// its status follows what Claude says it does instead of guessing from keys or stray tool
+    /// events.
+    pub status_from_registry: bool,
 }
 
 /// State of the rich input editor for composing a prompt to send to a CLI agent.
@@ -309,7 +317,9 @@ impl CLIAgentSession {
 
     /// Harp: the sidebar has a status for this session, from a plugin or from the title.
     pub fn shows_status(&self) -> bool {
-        self.received_rich_notification || self.session_context.status_from_title
+        self.received_rich_notification
+            || self.session_context.status_from_title
+            || self.session_context.status_from_registry
     }
 
     /// Whether the session is blocked on a `NeedsInput` notification, so nothing should be
@@ -320,17 +330,6 @@ impl CLIAgentSession {
             self.status,
             CLIAgentSessionStatus::Blocked {
                 source: BlockedSource::NeedsInput,
-                ..
-            }
-        )
-    }
-
-    /// Whether a permission dialog this session reported through its hook is still open.
-    pub fn is_asking_permission(&self) -> bool {
-        matches!(
-            self.status,
-            CLIAgentSessionStatus::Blocked {
-                source: BlockedSource::PermissionRequest,
                 ..
             }
         )
@@ -445,6 +444,13 @@ impl CLIAgentSession {
                     }
                     // Turns woken by background tasks or subagents send no prompt_submit, so a tool
                     // finishing after the last stop is the only sign the agent is working again.
+                    // Harp: the registry reports such turns itself, and a tool event after a stop
+                    // is as often a straggler from the turn that ended.
+                    CLIAgentSessionStatus::Success | CLIAgentSessionStatus::Failed { .. }
+                        if self.session_context.status_from_registry =>
+                    {
+                        return None;
+                    }
                     CLIAgentSessionStatus::Success | CLIAgentSessionStatus::Failed { .. } => {
                         self.session_context.background_reported_this_turn = false;
                         CLIAgentSessionStatus::InProgress
@@ -721,6 +727,9 @@ pub struct CLIAgentSessionsModel {
     /// WarpOss: sessions shown as "needs you" because Claude Code's own session file says it
     /// waits on a dialog that sends no hook (`set_external_wait`).
     external_waits: HashMap<EntityId, ExternalWait>,
+    /// Harp: sessions `apply_claude_activity` ended as interrupted. Claude sends no stop for an
+    /// interrupt, so a stop that still comes ends the turn normally, announced like one.
+    registry_cancels: HashSet<EntityId>,
 }
 
 /// A "needs you" set from Claude Code's session file, and what it replaced.
@@ -750,6 +759,7 @@ impl CLIAgentSessionsModel {
             next_report_wait_token: 0,
             background_hook_seen: false,
             external_waits: HashMap::new(),
+            registry_cancels: HashSet::new(),
         }
     }
 
@@ -843,34 +853,83 @@ impl CLIAgentSessionsModel {
         self.status_changed_at.get(&terminal_view_id).copied()
     }
 
-    /// Ends the permission dialog that blocked this session at `asked_at`, as `PermissionReplied`
-    /// would. Claude Code fires no hook when the user answers one, so an allowed tool otherwise
-    /// stays on "needs you" until it finishes. A status change since `asked_at` wins.
-    pub fn permission_answered(
+    /// Harp: brings a Claude session's status in line with what Claude Code's registry says it
+    /// has been doing since `since_ms` (Unix ms), when that is newer than the status. Claude fires
+    /// no hook when the user interrupts a turn or answers a dialog, and none when a background
+    /// task wakes a turn, so the registry is the only sign of those. A dialog or an ended turn
+    /// counts only after `REGISTRY_HOOK_GRACE_MS`, leaving the hook that reports the same change
+    /// time to set the status with its own text and notification.
+    pub fn apply_claude_activity(
         &mut self,
         terminal_view_id: EntityId,
-        asked_at: DateTime<Local>,
+        activity: Activity,
+        since_ms: u64,
+        now_ms: u64,
         ctx: &mut ModelContext<Self>,
     ) {
-        let Some(session) = self.sessions.get(&terminal_view_id) else {
-            return;
-        };
-        if !session.is_asking_permission()
-            || self.status_changed_at(terminal_view_id) != Some(asked_at)
+        let changed_ms = self
+            .status_changed_at(terminal_view_id)
+            .and_then(|at| u64::try_from(at.timestamp_millis()).ok())
+            .unwrap_or(0);
+        if !self
+            .sessions
+            .get(&terminal_view_id)
+            .is_some_and(|session| session.agent == CLIAgent::Claude)
         {
             return;
         }
-        let event = CLIAgentEvent {
-            v: 1,
-            agent: session.agent,
-            event: CLIAgentEventType::PermissionReplied,
-            session_id: None,
-            cwd: None,
-            project: None,
-            payload: Default::default(),
-            source: CLIAgentEventSource::RichPlugin,
+        // Keys no longer cancel a registry session, so neither does a window armed before.
+        self.abort_pending_cancel(terminal_view_id);
+        let Some(session) = self.sessions.get_mut(&terminal_view_id) else {
+            return;
         };
-        self.update_from_event(terminal_view_id, &event, ctx);
+        session.session_context.status_from_registry = true;
+        if since_ms <= changed_ms {
+            return;
+        }
+        if activity == Activity::Busy {
+            session.session_context.had_activity = true;
+        }
+        let settled = now_ms.saturating_sub(since_ms) >= REGISTRY_HOOK_GRACE_MS;
+        let status = match (activity, &session.status) {
+            (Activity::Busy, CLIAgentSessionStatus::InProgress)
+            | (Activity::Waiting(_), CLIAgentSessionStatus::Blocked { .. })
+            | (
+                Activity::Idle,
+                CLIAgentSessionStatus::Success
+                | CLIAgentSessionStatus::Failed { .. }
+                | CLIAgentSessionStatus::Cancelled,
+            ) => return,
+            (Activity::Busy, CLIAgentSessionStatus::Blocked { .. }) => {
+                let event = CLIAgentEvent {
+                    v: 1,
+                    agent: session.agent,
+                    event: CLIAgentEventType::PermissionReplied,
+                    session_id: None,
+                    cwd: None,
+                    project: None,
+                    payload: Default::default(),
+                    source: CLIAgentEventSource::RichPlugin,
+                };
+                self.update_from_event(terminal_view_id, &event, ctx);
+                return;
+            }
+            (Activity::Busy, _) => CLIAgentSessionStatus::InProgress,
+            (_, _) if !settled => return,
+            (Activity::Waiting(label), _) => CLIAgentSessionStatus::Blocked {
+                message: Some(label.unwrap_or_else(|| NEEDS_INPUT_STATUS_MESSAGE.to_owned())),
+                source: BlockedSource::NeedsInput,
+            },
+            // No stop came for this turn: the user interrupted it.
+            (Activity::Idle, _) => CLIAgentSessionStatus::Cancelled,
+        };
+        if status == CLIAgentSessionStatus::Cancelled {
+            self.registry_cancels.insert(terminal_view_id);
+        } else {
+            self.registry_cancels.remove(&terminal_view_id);
+        }
+        self.external_waits.remove(&terminal_view_id);
+        self.change_status(terminal_view_id, status, ctx);
     }
 
     fn clear_provisional_work(&mut self, terminal_view_id: EntityId) {
@@ -1043,6 +1102,7 @@ impl CLIAgentSessionsModel {
         self.clear_provisional_work(terminal_view_id);
         self.status_changed_at.remove(&terminal_view_id);
         self.external_waits.remove(&terminal_view_id);
+        self.registry_cancels.remove(&terminal_view_id);
         if let Some(session) = self.sessions.remove(&terminal_view_id) {
             ctx.emit(CLIAgentSessionsModelEvent::Ended {
                 terminal_view_id,
@@ -1127,8 +1187,12 @@ impl CLIAgentSessionsModel {
             session.apply_event(event)
         };
         // An event that changes the status ends a wait read from the session file.
+        let mut announced_from = previous_status.clone();
         if new_status.is_some() {
             self.external_waits.remove(&terminal_view_id);
+            if self.registry_cancels.remove(&terminal_view_id) {
+                announced_from = CLIAgentSessionStatus::InProgress;
+            }
         }
         let agent = session.agent;
         // WarpOss: a stop that came before its turn's hook count ends quietly and waits. The next
@@ -1189,7 +1253,7 @@ impl CLIAgentSessionsModel {
         }
         if let Some(new_status) = new_status {
             let announce = status_change_is_announced(
-                &previous_status,
+                &announced_from,
                 had_background_work,
                 &new_status,
                 session.session_context.running_background_tasks().is_some(),
@@ -1333,6 +1397,7 @@ impl CLIAgentSessionsModel {
             session.status,
             CLIAgentSessionStatus::InProgress | CLIAgentSessionStatus::Blocked { .. }
         ) && session.supports_rich_status()
+            && !session.session_context.status_from_registry
             && self
                 .ctrl_c_cancel_state
                 .get(&terminal_view_id)
@@ -1408,17 +1473,34 @@ impl CLIAgentSessionsModel {
     /// session has already moved past `InProgress`/`Blocked` or no longer
     /// exists.
     fn force_cancel(&mut self, terminal_view_id: EntityId, ctx: &mut ModelContext<Self>) {
+        if self.sessions.get(&terminal_view_id).is_some_and(|session| {
+            matches!(
+                session.status,
+                CLIAgentSessionStatus::InProgress | CLIAgentSessionStatus::Blocked { .. }
+            )
+        }) {
+            self.change_status(terminal_view_id, CLIAgentSessionStatus::Cancelled, ctx);
+        }
+    }
+
+    /// Sets a status no plugin event reported, announced as the change warrants.
+    fn change_status(
+        &mut self,
+        terminal_view_id: EntityId,
+        status: CLIAgentSessionStatus,
+        ctx: &mut ModelContext<Self>,
+    ) {
         let Some(session) = self.sessions.get_mut(&terminal_view_id) else {
             return;
         };
-        if !matches!(
-            session.status,
-            CLIAgentSessionStatus::InProgress | CLIAgentSessionStatus::Blocked { .. }
-        ) {
-            return;
-        }
-
-        session.status = CLIAgentSessionStatus::Cancelled;
+        let has_background_work = session.session_context.running_background_tasks().is_some();
+        let announce = status_change_is_announced(
+            &session.status,
+            has_background_work,
+            &status,
+            has_background_work,
+        );
+        session.status = status.clone();
         let agent = session.agent;
         let session_context = Box::new(session.session_context.clone());
         self.clear_provisional_work(terminal_view_id);
@@ -1426,17 +1508,13 @@ impl CLIAgentSessionsModel {
         ctx.emit(CLIAgentSessionsModelEvent::StatusChanged {
             terminal_view_id,
             agent,
-            status: CLIAgentSessionStatus::Cancelled,
+            status,
             is_prompt_submit: false,
             session_context,
-            // The user pressed Ctrl-C in this tab.
-            announce: false,
+            announce,
         });
     }
 
-    /// Whether Ctrl-C cancellation has already resolved (`Cancelled`) or is
-    /// still pending (the grace window is armed) for this session. Only
-    /// used by tests.
     #[cfg(test)]
     pub(crate) fn has_pending_or_resolved_ctrl_c_cancel(&self, terminal_view_id: EntityId) -> bool {
         if matches!(
@@ -1518,6 +1596,7 @@ impl CLIAgentSessionsModel {
         self.abort_pending_cancel(terminal_view_id);
         self.ctrl_c_cancel_state.remove(&terminal_view_id);
         self.clear_provisional_work(terminal_view_id);
+        self.registry_cancels.remove(&terminal_view_id);
         self.status_changed_at.insert(terminal_view_id, Local::now());
         if let Some(old) = self.sessions.insert(terminal_view_id, session) {
             ctx.emit(CLIAgentSessionsModelEvent::Ended {

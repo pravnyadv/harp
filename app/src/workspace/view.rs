@@ -3780,6 +3780,8 @@ impl Workspace {
         ws.schedule_tmux_agent_poll(ctx);
         #[cfg(not(target_family = "wasm"))]
         ws.schedule_claude_wait_poll(ctx);
+        #[cfg(not(target_family = "wasm"))]
+        ws.schedule_claude_registry_poll(ctx);
         // Seed the settings pane with the initial settings-file error (if
         // any) read from `GlobalResourceHandles`. Subsequent updates are
         // pushed by `subscribe_to_settings_errors` and `dismiss_workspace_banner`.
@@ -29178,16 +29180,20 @@ impl View for Workspace {
                         -WORKSPACE_PADDING,
                     )
                 };
-                stack.add_positioned_overlay_child(
-                    ChildView::new(stack_view).finish(),
+                // Harp: the framed sidebar layout draws no tab bar to hang the toasts from.
+                let positioning = if self.uses_framed_sidebar_layout(app) {
+                    self.agent_toast_positioning()
+                } else {
                     OffsetPositioning::offset_from_save_position_element(
                         TAB_BAR_POSITION_ID,
                         vec2f(offset_x, 4.),
                         PositionedElementOffsetBounds::WindowByPosition,
                         anchor,
                         child_anchor,
-                    ),
-                );
+                    )
+                };
+                stack
+                    .add_positioned_overlay_child(ChildView::new(stack_view).finish(), positioning);
             }
         } else if !self.current_workspace_state.is_agent_management_popup_open {
             stack.add_positioned_overlay_child(
