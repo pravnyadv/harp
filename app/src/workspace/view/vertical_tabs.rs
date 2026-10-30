@@ -9198,7 +9198,9 @@ pub(super) mod sidebar {
     use crate::workspace::Workspace;
     use crate::workspace::action::{ClaudeButton, WorkspaceAction};
     use crate::workspace::tab_group::TabGroupId;
-    use crate::workspace::tab_settings::{SidebarRowStyle, SidebarSubtitle, TabSettings};
+    use crate::workspace::tab_settings::{
+        SidebarIndicator, SidebarRowStyle, SidebarSubtitle, TabSettings,
+    };
     use settings::Setting as _;
 
     pub(in crate::workspace::view) const SIDEBAR_WIDTH: f32 = 272.;
@@ -9751,37 +9753,59 @@ pub(super) mod sidebar {
         .finish()
     }
 
+    /// The status icon's 16 px slot, with `icon` centred in it.
+    fn slot(icon: Box<dyn Element>) -> Box<dyn Element> {
+        ConstrainedBox::new(Align::new(icon).finish())
+            .with_width(16.)
+            .with_height(16.)
+            .finish()
+    }
+
     /// The 15 px status icon in its 16 px slot. Two-tone icons are two tinted layers.
-    /// `dot_ring` is the ring colour of the background-shell dot, when the row has one.
-    fn status_icon(status: RowStatus, unread: bool, dot_ring: Option<ColorU>) -> Box<dyn Element> {
+    /// `dot_ring` is the ring colour of the background-shell dot, when the row has one. `tint`
+    /// is the agent's colour when the row marks its agent through the status icon: done and
+    /// inactive icons take it, and a working agent shows a dot in it that pulses natively.
+    fn status_icon(
+        status: RowStatus,
+        unread: bool,
+        dot_ring: Option<ColorU>,
+        tint: Option<ColorU>,
+    ) -> Box<dyn Element> {
         let mut stack = Stack::new();
         match status {
             RowStatus::Done => {
                 // Unread is a filled disc with the tick cut out of it, read a quiet bare tick.
                 if unread {
-                    stack.add_child(glyph(WarpIcon::SidebarDoneFill, colors::ICON_STRONG(), 15.));
+                    let fill = tint.unwrap_or_else(colors::ICON_STRONG);
+                    stack.add_child(glyph(WarpIcon::SidebarDoneFill, fill, 15.));
                     stack.add_child(glyph(
                         WarpIcon::SidebarDoneTick,
                         colors::ICON_ON_FILL(),
                         15.,
                     ));
                 } else {
-                    stack.add_child(glyph(WarpIcon::SidebarDoneTickRead, colors::RING(), 15.));
+                    let tick = tint.unwrap_or_else(colors::RING);
+                    stack.add_child(glyph(WarpIcon::SidebarDoneTickRead, tick, 15.));
                 }
             }
             RowStatus::Pending => {
                 stack.add_child(glyph(WarpIcon::SidebarDoneRing, colors::PENDING_RING(), 15.))
             }
             RowStatus::Working => {
+                if let Some(tint) = tint {
+                    let dot = agent_dot(tint, 8.);
+                    // The halo pulses natively (working_rings); without native marks it is still.
+                    return slot(if super::working_rings::native() {
+                        super::working_rings::Marker::pulsing(dot, tint).finish()
+                    } else {
+                        dot
+                    });
+                }
                 stack.add_child(glyph(WarpIcon::SidebarWorkingTrack, colors::TRACK(), 15.));
                 // The turning arc is a native layer where the window has one (working_rings);
                 // elsewhere the static arc stays.
                 if super::working_rings::native() {
-                    let marked = super::working_rings::Marker::new(stack.finish()).finish();
-                    return ConstrainedBox::new(Align::new(marked).finish())
-                        .with_width(16.)
-                        .with_height(16.)
-                        .finish();
+                    return slot(super::working_rings::Marker::new(stack.finish()).finish());
                 }
                 stack.add_child(glyph(
                     WarpIcon::SidebarWorkingArc,
@@ -9802,14 +9826,12 @@ pub(super) mod sidebar {
                 ));
             }
             RowStatus::Idle => {
-                stack.add_child(glyph(WarpIcon::SidebarIdleMoon, colors::RING(), 15.))
+                let moon = tint.map_or_else(colors::RING, |tint| scale_alpha(tint, 0.45));
+                stack.add_child(glyph(WarpIcon::SidebarIdleMoon, moon, 15.))
             }
             RowStatus::Shell => stack.add_child(glyph(WarpIcon::SidebarShell, colors::SUB(), 15.)),
         }
-        let icon = ConstrainedBox::new(Align::new(stack.finish()).finish())
-            .with_width(16.)
-            .with_height(16.)
-            .finish();
+        let icon = slot(stack.finish());
         let Some(ring) = dot_ring else {
             return icon;
         };
@@ -10044,47 +10066,63 @@ pub(super) mod sidebar {
         .finish()
     }
 
-    /// The dot before the time of a row whose terminal runs a CLI agent, in the agent's colour:
-    /// full with a pulsing halo while the agent works, dimmed otherwise, gone once the agent exits.
-    fn agent_dot(
-        status: RowStatus,
-        terminal_view_id: Option<EntityId>,
-        fade: f32,
-        app: &AppContext,
-    ) -> Option<Box<dyn Element>> {
-        let session = CLIAgentSessionsModel::as_ref(app).session(terminal_view_id?)?;
-        let color = match session.agent {
-            CLIAgent::Claude => ColorU::new(0xcc, 0x7b, 0x5c, 0xff),
-            CLIAgent::Codex => ColorU::new(0x7a, 0x9d, 0xff, 0xff),
-            agent => agent.brand_color().unwrap_or_else(colors::SUB),
-        };
-        let busy = status == RowStatus::Working;
-        let dot = Container::new(
-            ConstrainedBox::new(Empty::new().finish())
-                .with_width(AGENT_DOT)
-                .with_height(AGENT_DOT)
-                .finish(),
-        )
-        .with_background_color(scale_alpha(color, if busy { fade } else { 0.45 * fade }))
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(AGENT_DOT / 2.)))
-        .finish();
-        // The halo pulses natively (working_rings); without native marks the busy dot stays still.
-        if busy && super::working_rings::native() {
-            return Some(super::working_rings::Marker::pulsing(dot, color).finish());
-        }
-        Some(dot)
+    /// How a row marks the CLI agent running in its terminal, as the `sidebar_indicator` setting
+    /// says, in the agent's colour. Gone once the agent exits.
+    #[derive(Clone, Copy)]
+    enum AgentMark {
+        PathDot(ColorU),
+        StatusTint(ColorU),
     }
 
-    const AGENT_DOT: f32 = 8.;
+    impl AgentMark {
+        fn of(terminal_view_id: Option<EntityId>, app: &AppContext) -> Option<Self> {
+            let session = CLIAgentSessionsModel::as_ref(app).session(terminal_view_id?)?;
+            let color = match session.agent {
+                CLIAgent::Claude => ColorU::new(0xcc, 0x7b, 0x5c, 0xff),
+                CLIAgent::Codex => ColorU::new(0x7a, 0x9d, 0xff, 0xff),
+                agent => agent.brand_color().unwrap_or_else(colors::SUB),
+            };
+            Some(match TabSettings::as_ref(app).sidebar_indicator.value() {
+                SidebarIndicator::PathDot => Self::PathDot(color),
+                SidebarIndicator::StatusColor => Self::StatusTint(color),
+            })
+        }
 
-    /// A row's lines: the title and time (after the agent's dot when one runs), the optional
-    /// branch and folder line under them, then the 16 px icon slot centred beside both. Shared by
-    /// the row and the lifted copy that follows the pointer while it is dragged, so both put the
-    /// text in one place.
+        fn path_dot(self) -> Option<ColorU> {
+            match self {
+                Self::PathDot(color) => Some(color),
+                Self::StatusTint(_) => None,
+            }
+        }
+
+        fn status_tint(self) -> Option<ColorU> {
+            match self {
+                Self::StatusTint(color) => Some(color),
+                Self::PathDot(_) => None,
+            }
+        }
+    }
+
+    fn agent_dot(color: ColorU, size: f32) -> Box<dyn Element> {
+        Container::new(
+            ConstrainedBox::new(Empty::new().finish())
+                .with_width(size)
+                .with_height(size)
+                .finish(),
+        )
+        .with_background_color(color)
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(size / 2.)))
+        .finish()
+    }
+
+    /// A row's lines: the title and time, the optional branch and folder line under them (after
+    /// the agent's path dot), then the 16 px icon slot centred beside both. Shared by the row and
+    /// the lifted copy that follows the pointer while it is dragged, so both put the text in one
+    /// place.
     fn row_line(
         title: Box<dyn Element>,
-        agent_dot: Option<Box<dyn Element>>,
         time: Option<Box<dyn Element>>,
+        path_dot: Option<ColorU>,
         subtitle: Option<Box<dyn Element>>,
         icon_slot: Box<dyn Element>,
     ) -> Box<dyn Element> {
@@ -10093,20 +10131,20 @@ pub(super) mod sidebar {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(8.)
             .with_child(Expanded::new(1., title).finish());
-        let time = match (agent_dot, time) {
-            (Some(dot), Some(time)) => Some(
-                Flex::row()
-                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_spacing(5.)
-                    .with_child(dot)
-                    .with_child(time)
-                    .finish(),
-            ),
-            (dot, time) => time.or(dot),
-        };
         if let Some(time) = time {
             first_line.add_child(time);
         }
+        let subtitle = match (path_dot, subtitle) {
+            (Some(color), Some(subtitle)) => Some(
+                Flex::row()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_spacing(5.)
+                    .with_child(agent_dot(color, 6.))
+                    .with_child(Shrinkable::new(1., subtitle).finish())
+                    .finish(),
+            ),
+            (_, subtitle) => subtitle,
+        };
         let text_block = match subtitle {
             Some(subtitle) => Flex::column()
                 .with_main_axis_size(MainAxisSize::Min)
@@ -10532,6 +10570,7 @@ pub(super) mod sidebar {
         } else {
             super::shortcut_hint_label(props, app)
         };
+        let mark = AgentMark::of(terminal_view_id, app);
         let icon_slot = match props.row_close.as_ref() {
             Some((tab_index, close_state)) if hovered && !ghost && !menu_target => {
                 close_button(*tab_index, close_state.clone())
@@ -10541,7 +10580,7 @@ pub(super) mod sidebar {
             _ => {
                 let dot = shows_background_dot(status, background_shells(terminal_view_id, app))
                     .then(|| row_background(props.sidebar_surface, hovered));
-                let icon = status_icon(status, unread, dot);
+                let icon = status_icon(status, unread, dot, mark.and_then(AgentMark::status_tint));
                 if ghost {
                     Container::new(icon)
                         .with_foreground_overlay(scale_alpha(colors::SIDEBAR(), 0.65))
@@ -10551,8 +10590,10 @@ pub(super) mod sidebar {
                 }
             }
         };
-        let dot = agent_dot(status, terminal_view_id, fade, app);
-        row_line(title, dot, time, subtitle, icon_slot)
+        let path_dot = mark
+            .and_then(AgentMark::path_dot)
+            .map(|color| scale_alpha(color, fade));
+        row_line(title, time, path_dot, subtitle, icon_slot)
     }
 
     /// The lifted row that follows the pointer while a row is dragged: a full copy of the row at
@@ -10569,13 +10610,14 @@ pub(super) mod sidebar {
         } else {
             colors::INK()
         };
+        let mark = AgentMark::of(terminal_view_id, app);
         let line = row_line(
             row_title_text(title, ink, unread, app),
-            agent_dot(status, terminal_view_id, 1., app),
             status_time(status, terminal_view_id, app)
                 .map(|time| row_time_text(time, colors::SUB(), app)),
+            mark.and_then(AgentMark::path_dot),
             subtitle.map(|subtitle| row_subtitle_text(subtitle, colors::SUB(), app)),
-            status_icon(status, unread, None),
+            status_icon(status, unread, None, mark.and_then(AgentMark::status_tint)),
         );
         ConstrainedBox::new(
             Container::new(line)
