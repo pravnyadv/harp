@@ -1177,8 +1177,8 @@ pub(super) fn summary_conversation_status_for_terminal(
         .filter(|s| s.shows_status())
         .filter(|s| !matches!(s.agent, CLIAgent::Unknown))
     {
-        // Harp: an agent that has only started has no turn to call done; the row shows it as
-        // waiting for its first report (`agent_waiting_for_first_turn`).
+        // Harp: an agent that has only started has no turn of its own to report; the row shows a
+        // read tick for it (`agent_waiting_for_first_turn`).
         if !session.session_context.had_activity {
             return None;
         }
@@ -1200,7 +1200,8 @@ pub(super) fn summary_conversation_status_for_terminal(
 }
 
 /// Harp: the terminal runs an agent whose plugin reported its start but nothing since, such as a
-/// Claude Code that was just opened. Its row shows the empty ring, not a finished turn's tick.
+/// Claude Code that was just opened or resumed. Its row shows a read tick: nothing is running and
+/// nothing new waits to be read.
 pub(super) fn agent_waiting_for_first_turn(terminal_view: &TerminalView, app: &AppContext) -> bool {
     CLIAgentSessionsModel::as_ref(app)
         .session(terminal_view.id())
@@ -9192,8 +9193,8 @@ pub(super) mod sidebar {
     use crate::ai::blocklist::CLAUDE_ORANGE;
     use crate::appearance::Appearance;
     use crate::tab::TabData;
-    use crate::terminal::TerminalView;
     use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
+    use crate::terminal::{CLIAgent, TerminalView};
     use crate::workspace::Workspace;
     use crate::workspace::action::{ClaudeButton, WorkspaceAction};
     use crate::workspace::tab_group::TabGroupId;
@@ -9548,11 +9549,8 @@ pub(super) mod sidebar {
             let id = terminal_view.id();
             let status = match summary_conversation_status_for_terminal(terminal_view, app) {
                 Some(status) => status_from_conversation(&status),
-                None if tmux_agent_terminals.contains(&id)
-                    || agent_waiting_for_first_turn(terminal_view, app) =>
-                {
-                    RowStatus::Pending
-                }
+                None if tmux_agent_terminals.contains(&id) => RowStatus::Pending,
+                None if agent_waiting_for_first_turn(terminal_view, app) => RowStatus::Done,
                 None => RowStatus::Shell,
             };
             if best.is_none_or(|(current, _)| status_rank(status) > status_rank(current)) {
@@ -9581,11 +9579,8 @@ pub(super) mod sidebar {
         let status = match summary_conversation_status_for_terminal(terminal_view, app) {
             _ if props.is_inactive => RowStatus::Idle,
             Some(status) => status_from_conversation(&status),
-            None if props.hosts_tmux_agent
-                || agent_waiting_for_first_turn(terminal_view, app) =>
-            {
-                RowStatus::Pending
-            }
+            None if props.hosts_tmux_agent => RowStatus::Pending,
+            None if agent_waiting_for_first_turn(terminal_view, app) => RowStatus::Done,
             None => RowStatus::Shell,
         };
         (status, Some(terminal_view.id()))
@@ -10049,29 +10044,47 @@ pub(super) mod sidebar {
         .finish()
     }
 
-    /// The logo of the CLI agent running in the terminal, gone once the agent exits.
-    fn agent_logo(
+    /// The dot before the time of a row whose terminal runs a CLI agent, in the agent's colour:
+    /// full while the agent works, dimmed otherwise, gone once the agent exits.
+    fn agent_dot(
+        status: RowStatus,
         terminal_view_id: Option<EntityId>,
-        color: ColorU,
+        fade: f32,
         app: &AppContext,
     ) -> Option<Box<dyn Element>> {
         let session = CLIAgentSessionsModel::as_ref(app).session(terminal_view_id?)?;
-        let logo = glyph(session.agent.icon()?, color, STATUS_GLYPH);
+        let color = match session.agent {
+            CLIAgent::Claude => ColorU::new(0xcc, 0x7b, 0x5c, 0xff),
+            CLIAgent::Codex => ColorU::new(0x7a, 0x9d, 0xff, 0xff),
+            agent => agent.brand_color().unwrap_or_else(colors::SUB),
+        };
+        let busy = if status == RowStatus::Working {
+            1.
+        } else {
+            0.45
+        };
         Some(
-            ConstrainedBox::new(Align::new(logo).finish())
-                .with_width(16.)
-                .with_height(16.)
-                .finish(),
+            Container::new(
+                ConstrainedBox::new(Empty::new().finish())
+                    .with_width(AGENT_DOT)
+                    .with_height(AGENT_DOT)
+                    .finish(),
+            )
+            .with_background_color(scale_alpha(color, busy * fade))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(AGENT_DOT / 2.)))
+            .finish(),
         )
     }
 
-    /// A row's lines: the agent's logo when one runs, the title and time, the optional branch and
-    /// folder line under them, then the 16 px icon slot centred beside both. Shared by the row and
-    /// the lifted copy that follows the pointer while it is dragged, so both put the text in one
-    /// place.
+    const AGENT_DOT: f32 = 6.;
+
+    /// A row's lines: the title and time (after the agent's dot when one runs), the optional
+    /// branch and folder line under them, then the 16 px icon slot centred beside both. Shared by
+    /// the row and the lifted copy that follows the pointer while it is dragged, so both put the
+    /// text in one place.
     fn row_line(
-        agent_logo: Option<Box<dyn Element>>,
         title: Box<dyn Element>,
+        agent_dot: Option<Box<dyn Element>>,
         time: Option<Box<dyn Element>>,
         subtitle: Option<Box<dyn Element>>,
         icon_slot: Box<dyn Element>,
@@ -10081,6 +10094,17 @@ pub(super) mod sidebar {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(8.)
             .with_child(Expanded::new(1., title).finish());
+        let time = match (agent_dot, time) {
+            (Some(dot), Some(time)) => Some(
+                Flex::row()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_spacing(5.)
+                    .with_child(dot)
+                    .with_child(time)
+                    .finish(),
+            ),
+            (dot, time) => time.or(dot),
+        };
         if let Some(time) = time {
             first_line.add_child(time);
         }
@@ -10094,17 +10118,17 @@ pub(super) mod sidebar {
                 .finish(),
             None => first_line.finish(),
         };
-        let mut line = Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(8.);
-        if let Some(agent_logo) = agent_logo {
-            line.add_child(agent_logo);
-        }
-        line.add_child(Expanded::new(1., text_block).finish());
-        line.add_child(icon_slot);
         // Centred in the row's fixed height; without it a two-line row hugs the top edge.
-        Align::new(line.finish()).finish()
+        Align::new(
+            Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(8.)
+                .with_child(Expanded::new(1., text_block).finish())
+                .with_child(icon_slot)
+                .finish(),
+        )
+        .finish()
     }
 
     /// A section's rows as the `sidebar_row_style` setting lays them out: as given, with a line
@@ -10528,8 +10552,8 @@ pub(super) mod sidebar {
                 }
             }
         };
-        let logo = agent_logo(terminal_view_id, scale_alpha(ink, fade), app);
-        row_line(logo, title, time, subtitle, icon_slot)
+        let dot = agent_dot(status, terminal_view_id, fade, app);
+        row_line(title, dot, time, subtitle, icon_slot)
     }
 
     /// The lifted row that follows the pointer while a row is dragged: a full copy of the row at
@@ -10547,8 +10571,8 @@ pub(super) mod sidebar {
             colors::INK()
         };
         let line = row_line(
-            agent_logo(terminal_view_id, ink, app),
             row_title_text(title, ink, unread, app),
+            agent_dot(status, terminal_view_id, 1., app),
             status_time(status, terminal_view_id, app)
                 .map(|time| row_time_text(time, colors::SUB(), app)),
             subtitle.map(|subtitle| row_subtitle_text(subtitle, colors::SUB(), app)),
