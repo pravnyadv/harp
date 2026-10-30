@@ -630,6 +630,50 @@ settings::macros::implement_setting_for_enum!(
     description: "How the framed sidebar separates rows: \"plain\", \"dividers\" or \"inset_group\" (one rounded card per section).",
 );
 
+#[derive(
+    Default,
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    PartialEq,
+    Eq,
+    Copy,
+    Clone,
+    schemars::JsonSchema,
+    settings_value::SettingsValue,
+)]
+#[schemars(
+    description = "How a framed sidebar row shows which CLI agent runs in its tab.",
+    rename_all = "snake_case"
+)]
+pub enum SidebarIndicator {
+    /// A dot in the agent's colour before the row's path.
+    #[default]
+    PathDot,
+    /// The row's status icon drawn in the agent's colour, a pulsing dot while it works.
+    StatusColor,
+}
+
+impl SidebarIndicator {
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::PathDot => Self::StatusColor,
+            Self::StatusColor => Self::PathDot,
+        }
+    }
+}
+
+settings::macros::implement_setting_for_enum!(
+    SidebarIndicator,
+    TabSettings,
+    SupportedPlatforms::ALL,
+    SyncToCloud::Never,
+    surface: settings::SettingSurfaces::GUI,
+    private: false,
+    toml_path: "appearance.vertical_tabs.sidebar_indicator",
+    description: "How a framed sidebar row marks the CLI agent in its tab: \"path_dot\" (a dot in the agent's colour before the path) or \"status_color\" (the status icon in the agent's colour).",
+);
+
 impl SidebarColorOverrides {
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
         self.0
@@ -783,6 +827,7 @@ define_settings_group!(TabSettings, settings: [
     },
     sidebar_subtitle: SidebarSubtitle,
     sidebar_row_style: SidebarRowStyle,
+    sidebar_indicator: SidebarIndicator,
     sidebar_row_gap: SidebarRowGap {
         type: f32,
         default: 1.,

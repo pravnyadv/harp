@@ -4185,6 +4185,7 @@ impl Workspace {
             | TabSettingsChangedEvent::SidebarGlass { .. }
             | TabSettingsChangedEvent::SidebarSubtitle { .. }
             | TabSettingsChangedEvent::SidebarRowStyle { .. }
+            | TabSettingsChangedEvent::SidebarIndicator { .. }
             | TabSettingsChangedEvent::SidebarRowGap { .. }
             | TabSettingsChangedEvent::FramedCardPadding { .. }
             | TabSettingsChangedEvent::SidebarTitleSize { .. }
@@ -26194,6 +26195,12 @@ impl Workspace {
                     ctx
                 );
                 ctx.notify();
+            }
+            ToggleSidebarIndicator => {
+                TabSettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let toggled = settings.sidebar_indicator.value().toggled();
+                    report_if_error!(settings.sidebar_indicator.set_value(toggled, ctx));
+                });
             }
             ToggleVerticalTabsShowDetailsOnHover => {
                 let new_value = TabSettings::handle(ctx).update(ctx, |settings, ctx| {
