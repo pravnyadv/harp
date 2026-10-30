@@ -152,3 +152,25 @@ fn vertical_tabs_full_tab_menu_uses_vertical_tabs_path() {
     );
     assert_eq!(VerticalTabsFullTabMenu::toml_key(), "full_tab_menu");
 }
+
+#[test]
+fn sidebar_indicator_defaults_to_the_path_dot_and_toggles_between_both_modes() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+
+        TabSettings::handle(&app).read(&app, |settings, _ctx| {
+            assert_eq!(
+                *settings.sidebar_indicator.value(),
+                SidebarIndicator::PathDot
+            );
+        });
+    });
+    assert_eq!(
+        SidebarIndicator::PathDot.toggled(),
+        SidebarIndicator::StatusColor
+    );
+    assert_eq!(
+        SidebarIndicator::StatusColor.toggled(),
+        SidebarIndicator::PathDot
+    );
+}

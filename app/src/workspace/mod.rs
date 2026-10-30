@@ -789,6 +789,14 @@ pub fn init(app: &mut AppContext) {
         .with_enabled(|| FeatureFlag::VerticalTabs.is_enabled())
         .with_key_binding(cmd_or_ctrl_shift("b")),
         EditableBinding::new(
+            "workspace:toggle_sidebar_indicator",
+            BindingDescription::new("Switch sidebar indicator (path dot / status color)"),
+            WorkspaceAction::ToggleSidebarIndicator,
+        )
+        .with_context_predicate(id!("Workspace") & id!(flags::USE_VERTICAL_TABS_FLAG))
+        .with_group(bindings::BindingGroup::Navigation.as_str())
+        .with_enabled(|| FeatureFlag::VerticalTabs.is_enabled()),
+        EditableBinding::new(
             LEFT_PANEL_PROJECT_EXPLORER_BINDING_NAME,
             BindingDescription::new("Left Panel: Project explorer"),
             WorkspaceAction::ToggleProjectExplorer,
