@@ -10049,10 +10049,28 @@ pub(super) mod sidebar {
         .finish()
     }
 
-    /// A row's lines: the title and time, the optional branch and folder line under them, then the
-    /// 16 px icon slot centred beside both. Shared by the row and the lifted copy that follows the
-    /// pointer while it is dragged, so both put the text in one place.
+    /// The logo of the CLI agent running in the terminal, gone once the agent exits.
+    fn agent_logo(
+        terminal_view_id: Option<EntityId>,
+        color: ColorU,
+        app: &AppContext,
+    ) -> Option<Box<dyn Element>> {
+        let session = CLIAgentSessionsModel::as_ref(app).session(terminal_view_id?)?;
+        let logo = glyph(session.agent.icon()?, color, STATUS_GLYPH);
+        Some(
+            ConstrainedBox::new(Align::new(logo).finish())
+                .with_width(16.)
+                .with_height(16.)
+                .finish(),
+        )
+    }
+
+    /// A row's lines: the agent's logo when one runs, the title and time, the optional branch and
+    /// folder line under them, then the 16 px icon slot centred beside both. Shared by the row and
+    /// the lifted copy that follows the pointer while it is dragged, so both put the text in one
+    /// place.
     fn row_line(
+        agent_logo: Option<Box<dyn Element>>,
         title: Box<dyn Element>,
         time: Option<Box<dyn Element>>,
         subtitle: Option<Box<dyn Element>>,
@@ -10076,17 +10094,17 @@ pub(super) mod sidebar {
                 .finish(),
             None => first_line.finish(),
         };
+        let mut line = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(8.);
+        if let Some(agent_logo) = agent_logo {
+            line.add_child(agent_logo);
+        }
+        line.add_child(Expanded::new(1., text_block).finish());
+        line.add_child(icon_slot);
         // Centred in the row's fixed height; without it a two-line row hugs the top edge.
-        Align::new(
-            Flex::row()
-                .with_main_axis_size(MainAxisSize::Max)
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_spacing(8.)
-                .with_child(Expanded::new(1., text_block).finish())
-                .with_child(icon_slot)
-                .finish(),
-        )
-        .finish()
+        Align::new(line.finish()).finish()
     }
 
     /// A section's rows as the `sidebar_row_style` setting lays them out: as given, with a line
@@ -10510,7 +10528,8 @@ pub(super) mod sidebar {
                 }
             }
         };
-        row_line(title, time, subtitle, icon_slot)
+        let logo = agent_logo(terminal_view_id, scale_alpha(ink, fade), app);
+        row_line(logo, title, time, subtitle, icon_slot)
     }
 
     /// The lifted row that follows the pointer while a row is dragged: a full copy of the row at
@@ -10528,6 +10547,7 @@ pub(super) mod sidebar {
             colors::INK()
         };
         let line = row_line(
+            agent_logo(terminal_view_id, ink, app),
             row_title_text(title, ink, unread, app),
             status_time(status, terminal_view_id, app)
                 .map(|time| row_time_text(time, colors::SUB(), app)),
