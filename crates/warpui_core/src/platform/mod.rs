@@ -23,6 +23,7 @@ pub use file_picker::{
     SaveFilePickerConfiguration,
 };
 use lazy_static::lazy_static;
+use pathfinder_color::ColorU;
 use pathfinder_geometry::rect::{RectF, RectI};
 use pathfinder_geometry::vector::{Vector2F, Vector2I};
 use serde::{Deserialize, Serialize};
@@ -465,6 +466,17 @@ pub enum FullscreenState {
     Maximized = 2,
 }
 
+/// A sidebar status mark the window animates natively ([`Window::set_working_rings`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WorkingMark {
+    /// The mark's rect, in window points from the top left.
+    pub rect: RectF,
+    /// The part of `rect` not clipped away (a row half scrolled out).
+    pub visible: RectF,
+    /// `None` spins the working ring over `rect`; a colour pulses a halo of it around `rect`.
+    pub pulse: Option<ColorU>,
+}
+
 pub trait Window: 'static + WindowContext + std::any::Any {
     fn minimize(&self);
     fn toggle_maximized(&self);
@@ -485,10 +497,10 @@ pub trait Window: 'static + WindowContext + std::any::Any {
         _dark: bool,
     ) {
     }
-    /// WarpOss: spins a native ring over each `(icon rect, visible part)` pair, in window points
-    /// from the top left, so the sidebar's "working" icons turn without the app repainting. An
-    /// empty list removes them. Platforms without it keep the static arc the app draws.
-    fn set_working_rings(&self, _rings: &[(RectF, RectF)], _dark: bool) {}
+    /// WarpOss: animates each mark natively, so the sidebar's "working" icons move without the
+    /// app repainting. An empty list removes them. Platforms without it keep the static arc the
+    /// app draws.
+    fn set_working_rings(&self, _marks: &[WorkingMark], _dark: bool) {}
     /// Whether [`Self::set_working_rings`] draws anything (the app then leaves the arc out).
     fn supports_working_rings(&self) -> bool {
         false
