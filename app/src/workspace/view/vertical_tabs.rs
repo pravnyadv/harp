@@ -10076,7 +10076,7 @@ pub(super) mod sidebar {
         )
     }
 
-    const AGENT_DOT: f32 = 6.;
+    const AGENT_DOT: f32 = 8.;
 
     /// A row's lines: the title and time (after the agent's dot when one runs), the optional
     /// branch and folder line under them, then the 16 px icon slot centred beside both. Shared by
