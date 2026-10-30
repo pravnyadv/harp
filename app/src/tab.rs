@@ -130,11 +130,21 @@ pub(crate) fn keystroke_modifier_kinds(keystroke: &Keystroke) -> HashSet<Shortcu
     kinds
 }
 
+/// `revealed` are the modifiers held past the reveal delay, `pressed` every modifier held now.
+/// Harp: a modifier the bindings do not use keeps the hints hidden, so ⌘⇧4 (a screenshot) does
+/// not show them.
 pub(crate) fn reveals_shortcut_hints(
-    held: &HashSet<ShortcutModifierKind>,
+    revealed: &HashSet<ShortcutModifierKind>,
+    pressed: &HashSet<ShortcutModifierKind>,
     binding_kinds: &HashSet<ShortcutModifierKind>,
 ) -> bool {
-    held.intersection(binding_kinds).next().is_some()
+    !revealed.is_disjoint(binding_kinds) && pressed.is_subset(binding_kinds)
+}
+
+fn modifier_kinds(keys: &HashSet<KeyCode>) -> HashSet<ShortcutModifierKind> {
+    keys.iter()
+        .filter_map(|key| shortcut_modifier_kind(*key))
+        .collect()
 }
 
 #[derive(Default)]
@@ -153,6 +163,10 @@ impl TabShortcutModifierState {
         if pressed {
             if !self.held_keys.insert(key_code) {
                 return;
+            }
+            // A modifier joining shown hints may hide them.
+            if !self.revealed_keys.is_empty() {
+                ctx.notify();
             }
 
             let task = ctx.spawn_abortable(
@@ -193,10 +207,11 @@ impl TabShortcutModifierState {
     }
 
     fn held_kinds(&self) -> HashSet<ShortcutModifierKind> {
-        self.revealed_keys
-            .iter()
-            .filter_map(|key| shortcut_modifier_kind(*key))
-            .collect()
+        modifier_kinds(&self.revealed_keys)
+    }
+
+    fn pressed_kinds(&self) -> HashSet<ShortcutModifierKind> {
+        modifier_kinds(&self.held_keys)
     }
 }
 
@@ -210,7 +225,8 @@ impl SingletonEntity for TabShortcutModifierState {}
 /// current switch-to-tab bindings actually use. Derived from the bindings so a
 /// user who remapped, say, ⌘1 to ⌥1 reveals with ⌥, not ⌘.
 pub(crate) fn reveals_tab_shortcut_hints(ctx: &AppContext) -> bool {
-    let held = TabShortcutModifierState::as_ref(ctx).held_kinds();
+    let state = TabShortcutModifierState::as_ref(ctx);
+    let held = state.held_kinds();
     if held.is_empty() {
         return false;
     }
@@ -221,7 +237,7 @@ pub(crate) fn reveals_tab_shortcut_hints(ctx: &AppContext) -> bool {
         .filter_map(|name| keybinding_name_to_keystroke(name, ctx))
         .flat_map(|keystroke| keystroke_modifier_kinds(&keystroke))
         .collect();
-    reveals_shortcut_hints(&held, &binding_kinds)
+    reveals_shortcut_hints(&held, &state.pressed_kinds(), &binding_kinds)
 }
 
 /// Label for the tab right-click menu's "Move to group" submenu parent.

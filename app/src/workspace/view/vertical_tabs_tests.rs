@@ -1175,13 +1175,37 @@ fn synced_inputs_indicator_hidden_on_non_terminal_rows() {
 #[test]
 fn reveals_shortcut_hints_requires_overlap_with_binding_modifiers() {
     let super_kind = once(ShortcutModifierKind::Super).collect();
-    assert!(reveals_shortcut_hints(&super_kind, &super_kind));
+    assert!(reveals_shortcut_hints(
+        &super_kind,
+        &super_kind,
+        &super_kind
+    ));
 
     let alt_kind = once(ShortcutModifierKind::Alt).collect();
-    assert!(!reveals_shortcut_hints(&alt_kind, &super_kind));
+    assert!(!reveals_shortcut_hints(&alt_kind, &alt_kind, &super_kind));
 
     let empty = std::collections::HashSet::new();
-    assert!(!reveals_shortcut_hints(&empty, &super_kind));
+    assert!(!reveals_shortcut_hints(&empty, &super_kind, &super_kind));
+}
+
+/// ⌘⇧4 takes a screenshot; the held Shift, which no switch-to-tab binding uses, keeps the hints
+/// out of it.
+#[test]
+fn reveals_shortcut_hints_hides_while_another_modifier_is_held() {
+    let super_kind = once(ShortcutModifierKind::Super).collect();
+    let super_shift = [ShortcutModifierKind::Super, ShortcutModifierKind::Shift]
+        .into_iter()
+        .collect();
+    assert!(!reveals_shortcut_hints(
+        &super_kind,
+        &super_shift,
+        &super_kind
+    ));
+    assert!(reveals_shortcut_hints(
+        &super_shift,
+        &super_shift,
+        &super_shift
+    ));
 }
 
 #[test]
