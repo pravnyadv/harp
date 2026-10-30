@@ -11,7 +11,8 @@
 #
 # --host        Build on another Mac over ssh (the tree at HEAD is copied there with git archive,
 #               the bundle is copied back). Signing always happens here, where the keychain is.
-# --universal   Build arm64 + x86_64 (default: arm64 only, about half the build time).
+# --universal   Build arm64 + x86_64 with ThinLTO (default: arm64 only, with the incremental
+#               harp-release profile, much faster to rebuild).
 # --skip-build  Reuse dist/Harp.app from an earlier run and only sign and package.
 # --notarize    Submit the DMG to Apple, wait, staple and validate. Needs a Developer ID.
 # --publish     Upload the DMG to a GitHub release tagged v<version>-<short sha> on the origin
@@ -174,6 +175,11 @@ if [[ $SKIP_BUILD == false ]]; then
     [[ $DRY_RUN == true ]] || git archive HEAD | ssh "$HOST" "tar -x -C '$REMOTE_DIR'"
     run ssh "$HOST" "cd '$REMOTE_DIR' && PATH=$REMOTE_PATH:\$PATH ./script/macos/bundle ${BUNDLE_ARGS[*]}"
     run rsync -a "$HOST:$REMOTE_DIR/$BUNDLE_OUT" "$DIST/"
+  elif [[ $UNIVERSAL == false ]]; then
+    # The harp-release profile (Cargo.toml) is incremental and skips the dSYM, unlike the
+    # ThinLTO release-lto that script/macos/bundle builds.
+    run env WARP_SKIP_COMMON_SKILLS_INSTALL=1 ./script/run --profile harp-release --dont-open
+    run cp -R target/harp-release/bundle/osx/Harp.app "$DIST/"
   else
     run ./script/macos/bundle "${BUNDLE_ARGS[@]}"
     run cp -R "$BUNDLE_OUT" "$DIST/"
