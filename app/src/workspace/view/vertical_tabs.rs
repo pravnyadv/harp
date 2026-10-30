@@ -10045,7 +10045,7 @@ pub(super) mod sidebar {
     }
 
     /// The dot before the time of a row whose terminal runs a CLI agent, in the agent's colour:
-    /// full while the agent works, dimmed otherwise, gone once the agent exits.
+    /// full with a pulsing halo while the agent works, dimmed otherwise, gone once the agent exits.
     fn agent_dot(
         status: RowStatus,
         terminal_view_id: Option<EntityId>,
@@ -10058,22 +10058,21 @@ pub(super) mod sidebar {
             CLIAgent::Codex => ColorU::new(0x7a, 0x9d, 0xff, 0xff),
             agent => agent.brand_color().unwrap_or_else(colors::SUB),
         };
-        let busy = if status == RowStatus::Working {
-            1.
-        } else {
-            0.45
-        };
-        Some(
-            Container::new(
-                ConstrainedBox::new(Empty::new().finish())
-                    .with_width(AGENT_DOT)
-                    .with_height(AGENT_DOT)
-                    .finish(),
-            )
-            .with_background_color(scale_alpha(color, busy * fade))
-            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(AGENT_DOT / 2.)))
-            .finish(),
+        let busy = status == RowStatus::Working;
+        let dot = Container::new(
+            ConstrainedBox::new(Empty::new().finish())
+                .with_width(AGENT_DOT)
+                .with_height(AGENT_DOT)
+                .finish(),
         )
+        .with_background_color(scale_alpha(color, if busy { fade } else { 0.45 * fade }))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(AGENT_DOT / 2.)))
+        .finish();
+        // The halo pulses natively (working_rings); without native marks the busy dot stays still.
+        if busy && super::working_rings::native() {
+            return Some(super::working_rings::Marker::pulsing(dot, color).finish());
+        }
+        Some(dot)
     }
 
     const AGENT_DOT: f32 = 8.;
@@ -11603,11 +11602,12 @@ pub(in crate::workspace::view) mod working_rings {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
+    use pathfinder_color::ColorU;
     use pathfinder_geometry::rect::RectF;
     use warpui::elements::Point;
     use warpui::event::DispatchedEvent;
     use warpui::geometry::vector::Vector2F;
-    use warpui::platform::Window as PlatformWindow;
+    use warpui::platform::{Window as PlatformWindow, WorkingMark};
     use warpui::zoom::Scale;
     use warpui::{
         AfterLayoutContext, AppContext, Element, EventContext, LayoutContext, PaintContext,
@@ -11615,8 +11615,8 @@ pub(in crate::workspace::view) mod working_rings {
     };
 
     thread_local! {
-        /// Rings painted in the frame the current [`Sink`] is painting.
-        static FRAME: RefCell<Vec<(RectF, RectF)>> = const { RefCell::new(Vec::new()) };
+        /// Marks painted in the frame the current [`Sink`] is painting.
+        static FRAME: RefCell<Vec<WorkingMark>> = const { RefCell::new(Vec::new()) };
         /// Set by the workspace before it builds its elements: rings are native in this window.
         static NATIVE: Cell<bool> = const { Cell::new(false) };
     }
@@ -11630,17 +11630,26 @@ pub(in crate::workspace::view) mod working_rings {
         NATIVE.with(|cell| cell.set(native));
     }
 
-    /// The rings (and dark flag) last handed to one window; kept by its workspace across frames.
-    pub(in crate::workspace::view) type Sent = Rc<RefCell<(bool, Vec<(RectF, RectF)>)>>;
+    /// The marks (and dark flag) last handed to one window; kept by its workspace across frames.
+    pub(in crate::workspace::view) type Sent = Rc<RefCell<(bool, Vec<WorkingMark>)>>;
 
     /// Records where a working icon was painted, and which part of it the list clip lets show.
     pub(in crate::workspace::view) struct Marker {
         child: Box<dyn Element>,
+        pulse: Option<ColorU>,
     }
 
     impl Marker {
         pub(in crate::workspace::view) fn new(child: Box<dyn Element>) -> Self {
-            Self { child }
+            Self { child, pulse: None }
+        }
+
+        /// Harp: a busy agent's dot, which pulses a halo of `color` instead of spinning a ring.
+        pub(in crate::workspace::view) fn pulsing(child: Box<dyn Element>, color: ColorU) -> Self {
+            Self {
+                child,
+                pulse: Some(color),
+            }
         }
     }
 
@@ -11668,7 +11677,12 @@ pub(in crate::workspace::view) mod working_rings {
                 && visible.width() > 0.
                 && visible.height() > 0.
             {
-                FRAME.with(|frame| frame.borrow_mut().push((RectF::new(origin, size), visible)));
+                let mark = WorkingMark {
+                    rect: RectF::new(origin, size),
+                    visible,
+                    pulse: self.pulse,
+                };
+                FRAME.with(|frame| frame.borrow_mut().push(mark));
             }
         }
 
@@ -11739,10 +11753,14 @@ pub(in crate::workspace::view) mod working_rings {
             // points, and a zoom change then reads as a changed list and is resent.
             let zoom = 1f32.scale_up(app.zoom_factor());
             FRAME.with(|frame| {
-                let frame: Vec<(RectF, RectF)> = frame
+                let frame: Vec<WorkingMark> = frame
                     .borrow()
                     .iter()
-                    .map(|(full, visible)| (*full * zoom, *visible * zoom))
+                    .map(|mark| WorkingMark {
+                        rect: mark.rect * zoom,
+                        visible: mark.visible * zoom,
+                        ..*mark
+                    })
                     .collect();
                 let mut sent = self.sent.borrow_mut();
                 // The dark flag rides along: a theme switch must recolor the rings.
