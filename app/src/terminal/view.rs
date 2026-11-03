@@ -54,7 +54,7 @@ mod zero_state_block;
 
 use std::any::Any;
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
@@ -2556,6 +2556,10 @@ pub struct TerminalView {
     /// Whether there is an active text selection.
     is_selecting: bool,
 
+    /// Harp: `is_selecting` as of the last frame drawn. A mouse-up the OS delivers before the
+    /// frame after a mouse-down reaches elements that still think nothing is selected.
+    is_selecting_drawn: Cell<bool>,
+
     context_menu: ViewHandle<Menu<TerminalAction>>,
 
     /// None iff there is no context menu open currently.
@@ -4392,6 +4396,7 @@ impl TerminalView {
             alt_screen_scroll_top: Lines::zero(),
             horizontal_clipped_scroll_state: Default::default(),
             is_selecting: false,
+            is_selecting_drawn: Cell::new(false),
             context_menu_state: None,
             context_menu,
             hovered_secret: None,
@@ -19084,19 +19089,28 @@ impl TerminalView {
         ctx.notify();
     }
 
+    /// Closes the open selection and returns whether there was one. Harp: every mouse-up asks,
+    /// since the element that received it may have been drawn before the selection began.
+    fn finish_selecting(&mut self) -> bool {
+        if !self.is_selecting {
+            return false;
+        }
+        if !self.is_selecting_drawn.get() {
+            log::info!("Harp: a selection ended before any frame showed it; copying it anyway");
+        }
+        self.is_selecting = false;
+        true
+    }
+
     fn end_alt_selection(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.is_selecting {
-            self.is_selecting = false;
+        if self.finish_selecting() {
             self.maybe_copy_selection_to_clipboard(ctx);
             ctx.notify();
-        } else {
-            log::warn!("end_selection dispatched with no pending selection");
         }
     }
 
     fn end_text_selection(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.is_selecting {
-            self.is_selecting = false;
+        if self.finish_selecting() {
             self.block_text_selection_start_position = None;
 
             let selected_text = {
@@ -19125,8 +19139,6 @@ impl TerminalView {
             }
 
             ctx.notify();
-        } else {
-            log::warn!("end_selection dispatched with no pending selection");
         }
     }
 
@@ -24828,7 +24840,10 @@ impl TerminalView {
                 .upgrade(app)
                 .expect("terminal should upgrade")
                 .is_focused(app),
-            is_terminal_selecting: self.is_selecting(),
+            is_terminal_selecting: {
+                self.is_selecting_drawn.set(self.is_selecting());
+                self.is_selecting()
+            },
             is_context_menu_open: self.is_context_menu_open(),
             is_waterfall_gap_mode: self.is_waterfall_gap_mode(model, app),
             pane_state,
