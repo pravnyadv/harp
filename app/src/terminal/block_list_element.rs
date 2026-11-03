@@ -1751,9 +1751,9 @@ impl BlockListElement {
         ctx: &mut EventContext,
         app: &AppContext,
     ) -> bool {
-        if self.is_terminal_selecting {
-            ctx.dispatch_typed_action(TerminalAction::BlockTextSelect(BlockTextSelectAction::End));
-        }
+        // Harp: sent even when this element was drawn without a selection; the view ends one
+        // only if it is open (see `TerminalView::finish_selecting`).
+        ctx.dispatch_typed_action(TerminalAction::BlockTextSelect(BlockTextSelectAction::End));
 
         if self.is_mouse_position_within_bounds(position) {
             if let Some(point) = self.coord_to_point(
