@@ -401,9 +401,9 @@ impl AltScreenElement {
             modifiers: *mouse_state.modifiers(),
         });
 
-        if self.is_terminal_selecting {
-            ctx.dispatch_typed_action(TerminalAction::AltSelect(SelectAction::End));
-        }
+        // Harp: sent even when this element was drawn without a selection; the view ends one
+        // only if it is open (see `TerminalView::finish_selecting`).
+        ctx.dispatch_typed_action(TerminalAction::AltSelect(SelectAction::End));
 
         if !should_intercept_mouse(&self.model.lock(), mouse_state.modifiers().shift, app) {
             ctx.dispatch_typed_action(TerminalAction::AltMouseAction(mouse_state.set_point(point)));
