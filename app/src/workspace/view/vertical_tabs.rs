@@ -1234,7 +1234,7 @@ fn section_title_padding() -> Padding {
 /// shows that state with its own icon, so the glyph and its space go, as does Codex's blinking
 /// "Action Required" in front of the task. Only for rows whose pane runs that agent; other titles
 /// keep every character.
-fn strip_agent_title_glyph(agent: CLIAgent, title: &str) -> &str {
+pub(super) fn strip_agent_title_glyph(agent: CLIAgent, title: &str) -> &str {
     if agent == CLIAgent::Codex
         && let Some(prefix) = codex_action_required_prefix(title)
     {
@@ -1272,7 +1272,7 @@ fn strip_group_prefix<'a>(title: &'a str, group_name: Option<&str>) -> &'a str {
 }
 
 /// The work that keeps the row working; background shells are the row's dot, not this count.
-pub(super) fn background_tasks_label(tasks: BackgroundTasks) -> String {
+fn background_tasks_label(tasks: BackgroundTasks) -> String {
     let count = tasks.count.saturating_sub(tasks.shells);
     let noun = match (tasks.only_subagents, count) {
         (true, 1) => "background agent",

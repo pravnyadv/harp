@@ -23973,12 +23973,7 @@ impl Workspace {
             self.add_right_panel(
                 &mut panels_view,
                 &mut prev_panel_added,
-                Some(claude_agents_panel::render_claude_agents_panel(
-                    &self.claude_agents_panel,
-                    &self.tabs,
-                    self.active_tab_index,
-                    app,
-                )),
+                Some(self.render_claude_agents_panel(app)),
                 framed,
                 app,
             );
@@ -26022,10 +26017,7 @@ impl Workspace {
                 let pane_group_handle = self.active_tab_pane_group().clone();
                 self.toggle_right_panel(&pane_group_handle, ctx);
             }
-            ToggleClaudeAgentsPanel => {
-                self.claude_agents_panel_open = !self.claude_agents_panel_open;
-                ctx.notify();
-            }
+            AgentsPanel(action) => self.handle_agents_panel_action(action, ctx),
             #[cfg(feature = "local_fs")]
             OpenCodeReviewPanel(locator) => {
                 let pane_group_handle = self
