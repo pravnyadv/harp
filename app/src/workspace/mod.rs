@@ -779,6 +779,15 @@ pub fn init(app: &mut AppContext) {
         .with_mac_key_binding("cmd-shift-+")
         .with_linux_or_windows_key_binding("ctrl-shift-+"),
         EditableBinding::new(
+            "workspace:toggle_claude_agents_panel",
+            BindingDescription::new("Toggle agents panel")
+                .with_custom_description(bindings::MAC_MENUS_CONTEXT, "Toggle Agents Panel"),
+            WorkspaceAction::ToggleClaudeAgentsPanel,
+        )
+        .with_context_predicate(id!("Workspace"))
+        .with_mac_key_binding("cmd-shift-j")
+        .with_linux_or_windows_key_binding("ctrl-shift-j"),
+        EditableBinding::new(
             TOGGLE_VERTICAL_TABS_PANEL_BINDING_NAME,
             BindingDescription::new("Toggle vertical tabs panel")
                 .with_custom_description(bindings::MAC_MENUS_CONTEXT, "Toggle Vertical Tabs Panel"),

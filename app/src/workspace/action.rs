@@ -409,6 +409,8 @@ pub enum WorkspaceAction {
     OpenWarpDrive,
     /// Toggles the right panel. This happens as an explicit action from the user.
     ToggleRightPanel,
+    /// Harp: shows or hides the panel listing the window's agent sessions.
+    ToggleClaudeAgentsPanel,
     /// Opens the code review panel (right panel) without toggling. If already open,
     /// switches to the target pane's repo. Used by vertical tabs diff stats chip.
     OpenCodeReviewPanel(PaneViewLocator),
@@ -1129,6 +1131,7 @@ impl WorkspaceAction {
             | OpenWarpDrive
             | ClosePanel
             | ToggleRightPanel
+            | ToggleClaudeAgentsPanel
             | OpenCodeReviewPanel(..)
             | ToggleVerticalTabsSettingsPopup
             | SetVerticalTabsDisplayGranularity(_)
