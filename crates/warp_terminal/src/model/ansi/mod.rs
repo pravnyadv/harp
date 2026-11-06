@@ -19,6 +19,7 @@ use std::time::Duration;
 use std::{io, str};
 
 use ansi_c_decoder::*;
+use base64::Engine;
 use byte_unit::{Byte, Unit as ByteUnit};
 pub use control_sequence_parameters::*;
 pub use dcs_hooks::*;
@@ -1094,6 +1095,11 @@ where
                     self.handler.on_iterm_image_data_received(image_data);
                 } else if params[1].starts_with(b"FileEnd") {
                     self.handler.end_iterm_image_receiving();
+                } else if let Some((name, value)) = params[1]
+                    .strip_prefix(b"SetUserVar=")
+                    .and_then(parse_user_var)
+                {
+                    self.handler.set_user_var(&name, value);
                 } else {
                     unhandled(params)
                 }
@@ -1635,6 +1641,16 @@ where
 // Tests for parsing escape sequences.
 //
 // Byte sequences used in these tests are recording of pty stdout.
+/// Splits a `SetUserVar` payload (`name=<base64 value>`) into its name and decoded value.
+fn parse_user_var(payload: &[u8]) -> Option<(String, String)> {
+    let separator = payload.iter().position(|&byte| byte == b'=')?;
+    let name = str::from_utf8(&payload[..separator]).ok()?;
+    let value = base64::engine::general_purpose::STANDARD
+        .decode(&payload[separator + 1..])
+        .ok()?;
+    Some((name.to_owned(), String::from_utf8(value).ok()?))
+}
+
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod tests;

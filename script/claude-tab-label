@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""Claude Code hook that names the session's row in Harp's vertical tabs sidebar.
+
+Register it for SessionStart, UserPromptSubmit and SessionEnd. The terminal title (Claude's
+session name) is left alone; only the sidebar row label changes. The label is, first match wins:
+  1. the monday task linked to this session, when the `mon` CLI is installed;
+  2. the current git branch, minus its type prefix, unless it is a default branch;
+  3. nothing, so the row keeps showing Claude's session name.
+SessionEnd clears the label. Harp ignores the label while the row has a manual rename.
+"""
+
+import base64
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+USER_VAR = "harp_tab_label"
+DEFAULT_BRANCHES = {"main", "master", "develop", "dev", "trunk", "HEAD"}
+
+
+def run(args, cwd=None):
+    try:
+        result = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def monday_task_name(session_id):
+    if not session_id or not shutil.which("mon"):
+        return ""
+    try:
+        items = json.loads(run(["mon", "links", "--session", session_id, "--json"]) or "{}")
+    except json.JSONDecodeError:
+        return ""
+    items = items.get("items") or []
+    return items[0].get("name", "") if len(items) == 1 else ""
+
+
+def branch_label(cwd):
+    branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd)
+    if not branch or branch in DEFAULT_BRANCHES:
+        return ""
+    words = branch.rsplit("/", 1)[-1].replace("-", " ").replace("_", " ").strip()
+    return words[:1].upper() + words[1:]
+
+
+def controlling_tty():
+    """The tty of the nearest ancestor that has one; hooks themselves run without a terminal."""
+    pid = os.getppid()
+    while pid > 1:
+        info = run(["ps", "-o", "ppid=,tty=", "-p", str(pid)]).split()
+        if len(info) != 2:
+            return None
+        ppid, tty = info
+        if tty not in ("??", "-"):
+            return "/dev/" + tty
+        pid = int(ppid)
+    return None
+
+
+def main():
+    try:
+        hook = json.load(sys.stdin)
+    except json.JSONDecodeError:
+        return
+    tty = controlling_tty()
+    # Answer Claude at once; the lookups below can take most of a second.
+    if not tty or os.fork() != 0:
+        return
+    os.setsid()
+    # Claude waits for the hook's stdout and stderr to close, not just for it to exit.
+    devnull = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(devnull, fd)
+
+    label = ""
+    if hook.get("hook_event_name") != "SessionEnd":
+        cwd = hook.get("cwd") or os.getcwd()
+        label = monday_task_name(hook.get("session_id")) or branch_label(cwd)
+
+    encoded = base64.b64encode(label.encode()).decode()
+    try:
+        with open(tty, "w") as terminal:
+            terminal.write(f"\033]1337;SetUserVar={USER_VAR}={encoded}\a")
+    except OSError:
+        pass
+
+
+if __name__ == "__main__":
+    main()

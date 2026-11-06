@@ -691,6 +691,9 @@ pub struct PaneConfiguration {
     title: String,
     title_secondary: String,
     custom_vertical_tabs_title: Option<String>,
+    /// Sidebar label set by a program in the pane (OSC 1337 `SetUserVar=harp_tab_label`). A
+    /// user rename still wins over it, and it is not persisted.
+    reported_tab_label: Option<String>,
     show_active_pane_indicator: bool,
 
     /// If true, we draw an accent border around the pane.
@@ -718,6 +721,7 @@ impl PaneConfiguration {
             title: title.into(),
             title_secondary: String::from(""),
             custom_vertical_tabs_title: None,
+            reported_tab_label: None,
             show_active_pane_indicator: false,
             show_accent_border: false,
             has_open_modal: false,
@@ -736,6 +740,20 @@ impl PaneConfiguration {
 
     pub fn custom_vertical_tabs_title(&self) -> Option<&str> {
         self.custom_vertical_tabs_title.as_deref()
+    }
+
+    /// The name the vertical tabs row shows instead of the title, if any.
+    pub fn vertical_tabs_label(&self) -> Option<&str> {
+        self.custom_vertical_tabs_title
+            .as_deref()
+            .or(self.reported_tab_label.as_deref())
+    }
+
+    pub fn set_reported_tab_label(&mut self, label: Option<String>, ctx: &mut ModelContext<Self>) {
+        if self.reported_tab_label != label {
+            self.reported_tab_label = label;
+            ctx.emit(PaneConfigurationEvent::VerticalTabsTitleUpdated);
+        }
     }
 
     pub fn dim_even_if_focused(&self) -> bool {

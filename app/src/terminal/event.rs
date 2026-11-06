@@ -31,6 +31,8 @@ pub enum Event {
     CompletionsFinished(Vec<ShellCompletion>, Option<warp_completer::meta::Span>),
     MouseCursorDirty,
     Title(String),
+    /// Sidebar label a program in the session reported, or `None` to clear it.
+    TabLabel(Option<String>),
     VisibleBootstrapBlock,
     /// Performs the minimal work necessary to show that a block has completed.
     /// Treat this as a performance-sensitive path.
@@ -435,6 +437,7 @@ impl Debug for Event {
             Event::BackgroundBlockStarted => write!(f, "BackgroundBlockStarted"),
             Event::VisibleBootstrapBlock => write!(f, "VisibleBootstrapBlock"),
             Event::Title(title) => write!(f, "Title({title})"),
+            Event::TabLabel(label) => write!(f, "TabLabel({label:?})"),
             Event::ClipboardStore(_, text) => write!(f, "ClipboardStore({text})"),
             Event::ClipboardLoad(_, _) => write!(f, "ClipboardLoad()"),
             Event::TerminalClear => write!(f, "TerminalClear"),

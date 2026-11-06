@@ -5086,7 +5086,7 @@ impl<'a> PaneProps<'a> {
             custom_vertical_tabs_title: include_custom_vertical_tabs_title
                 .then(|| {
                     pane_configuration
-                        .custom_vertical_tabs_title()
+                        .vertical_tabs_label()
                         .map(str::to_owned)
                 })
                 .flatten(),

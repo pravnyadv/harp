@@ -206,6 +206,7 @@ impl ModelEventDispatcher {
             }
             Event::MouseCursorDirty => ModelEvent::MouseCursorDirty,
             Event::Title(title) => ModelEvent::Title(title),
+            Event::TabLabel(label) => ModelEvent::TabLabel(label),
             Event::VisibleBootstrapBlock => ModelEvent::VisibleBootstrapBlock,
             Event::BlockCompleted(block_completed_event) => {
                 ModelEvent::BlockCompleted(block_completed_event)
@@ -381,6 +382,7 @@ enum PromptKind {
 pub enum ModelEvent {
     MouseCursorDirty,
     Title(String),
+    TabLabel(Option<String>),
     VisibleBootstrapBlock,
     /// Performs the minimal work necessary to show that a block has completed.
     /// Treat this as a performance-sensitive path.

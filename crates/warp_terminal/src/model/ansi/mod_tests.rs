@@ -32,6 +32,7 @@ struct MockHandler {
     completion_results: Vec<ShellCompletion>,
     completion_description_updates: Vec<String>,
     replacement_spans: Vec<(usize, usize)>,
+    user_vars: Vec<(String, String)>,
 }
 
 impl Handler for MockHandler {
@@ -256,6 +257,10 @@ impl Handler for MockHandler {
         self.pluggable_notifications.push((title, body));
     }
 
+    fn set_user_var(&mut self, name: &str, value: String) {
+        self.user_vars.push((name.to_owned(), value));
+    }
+
     fn set_hyperlink(&mut self, hyperlink: Option<Hyperlink>) {
         self.hyperlink_events.push(hyperlink);
     }
@@ -310,6 +315,7 @@ impl Default for MockHandler {
             completion_results: Vec::new(),
             completion_description_updates: Vec::new(),
             replacement_spans: Vec::new(),
+            user_vars: Vec::new(),
         }
     }
 }
@@ -1300,6 +1306,39 @@ fn parse_osc1337_without_second_param_does_not_panic() {
     // Also exercise the ST-terminated form.
     let bytes: &[u8] = b"\x1b]1337\x1b\\";
     let (_, _handler) = parse_bytes(bytes);
+}
+
+#[test]
+fn parse_osc1337_set_user_var() {
+    // "Template Deletion on Meta", base64-encoded.
+    let bytes: &[u8] =
+        b"\x1b]1337;SetUserVar=harp_tab_label=VGVtcGxhdGUgRGVsZXRpb24gb24gTWV0YQ==\x07";
+    let (_, handler) = parse_bytes(bytes);
+    assert_eq!(
+        handler.user_vars,
+        vec![(
+            "harp_tab_label".to_owned(),
+            "Template Deletion on Meta".to_owned()
+        )]
+    );
+
+    let bytes: &[u8] = b"\x1b]1337;SetUserVar=harp_tab_label=\x07";
+    let (_, handler) = parse_bytes(bytes);
+    assert_eq!(
+        handler.user_vars,
+        vec![("harp_tab_label".to_owned(), String::new())]
+    );
+}
+
+#[test]
+fn parse_osc1337_set_user_var_rejects_malformed_payloads() {
+    for bytes in [
+        b"\x1b]1337;SetUserVar=no_separator\x07".as_slice(),
+        b"\x1b]1337;SetUserVar=harp_tab_label=not base64!\x07".as_slice(),
+    ] {
+        let (_, handler) = parse_bytes(bytes);
+        assert!(handler.user_vars.is_empty());
+    }
 }
 
 #[test]
