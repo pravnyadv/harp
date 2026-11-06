@@ -2,6 +2,7 @@ pub mod claude_registry;
 pub mod event;
 pub mod listener;
 pub mod resume_store;
+pub mod subagents;
 #[cfg(not(target_family = "wasm"))]
 pub(crate) mod plugin_manager;
 

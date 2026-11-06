@@ -105,6 +105,17 @@ impl NewSessionMenuAnchor {
     }
 }
 
+/// Harp: what the agents panel was asked to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentsPanelAction {
+    Toggle,
+    /// Shows a subagent's steps, by its id.
+    OpenAgent(String),
+    /// Back from a subagent's steps to the list.
+    Back,
+    GoToTab(usize),
+}
+
 /// Where a Claude button sits: the open sidebar's header, or the card header while it is closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaudeButton {
@@ -409,8 +420,8 @@ pub enum WorkspaceAction {
     OpenWarpDrive,
     /// Toggles the right panel. This happens as an explicit action from the user.
     ToggleRightPanel,
-    /// Harp: shows or hides the panel listing the window's agent sessions.
-    ToggleClaudeAgentsPanel,
+    /// Harp: the panel listing the subagents of the window's Claude sessions.
+    AgentsPanel(AgentsPanelAction),
     /// Opens the code review panel (right panel) without toggling. If already open,
     /// switches to the target pane's repo. Used by vertical tabs diff stats chip.
     OpenCodeReviewPanel(PaneViewLocator),
@@ -1131,7 +1142,7 @@ impl WorkspaceAction {
             | OpenWarpDrive
             | ClosePanel
             | ToggleRightPanel
-            | ToggleClaudeAgentsPanel
+            | AgentsPanel(_)
             | OpenCodeReviewPanel(..)
             | ToggleVerticalTabsSettingsPopup
             | SetVerticalTabsDisplayGranularity(_)

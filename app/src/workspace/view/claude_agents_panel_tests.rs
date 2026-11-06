@@ -1,71 +1,49 @@
-use super::{row_activity, row_status};
-use crate::ai::agent::conversation::ConversationStatus;
-use crate::terminal::CLIAgent;
-use crate::terminal::cli_agent_sessions::{
-    BackgroundTasks, CLIAgentInputState, CLIAgentSession, CLIAgentSessionContext,
-    CLIAgentSessionStatus,
-};
+use std::path::PathBuf;
 
-fn session(status: CLIAgentSessionStatus, context: CLIAgentSessionContext) -> CLIAgentSession {
-    CLIAgentSession {
-        agent: CLIAgent::Claude,
-        status,
-        session_context: context,
-        input_state: CLIAgentInputState::Closed,
-        should_auto_toggle_input: false,
-        listener: None,
-        plugin_version: None,
-        draft_text: None,
-        remote_host: None,
-        custom_command_prefix: None,
-        // A plugin-backed session, the only kind that has a status to show.
-        received_rich_notification: true,
+use chrono::{DateTime, Duration, Utc};
+
+use super::{agent_meta_line, visible_agents};
+use crate::terminal::cli_agent_sessions::subagents::Subagent;
+
+fn agent(id: &str, finished: bool, last_active_minutes_ago: i64, now: DateTime<Utc>) -> Subagent {
+    Subagent {
+        id: id.to_owned(),
+        agent_type: "Explore".to_owned(),
+        description: format!("Agent {id}"),
+        model: Some("haiku".to_owned()),
+        background: true,
+        finished,
+        started_at: Some(now - Duration::minutes(last_active_minutes_ago) - Duration::seconds(80)),
+        last_active_at: Some(now - Duration::minutes(last_active_minutes_ago)),
+        current_step: None,
+        transcript: PathBuf::new(),
     }
 }
 
 #[test]
-fn activity_shows_the_running_tool_and_its_target_else_the_summary() {
-    let with = |tool: Option<&str>, target: Option<&str>| {
-        row_activity(&session(
-            CLIAgentSessionStatus::InProgress,
-            CLIAgentSessionContext {
-                tool_name: tool.map(str::to_owned),
-                tool_input_preview: target.map(str::to_owned),
-                summary: Some(" Fixing the webhook ".to_owned()),
-                ..Default::default()
-            },
-        ))
-    };
-    assert_eq!(
-        with(Some("Bash"), Some("cargo test")).as_deref(),
-        Some("Bash: cargo test")
-    );
-    assert_eq!(with(Some("Read"), None).as_deref(), Some("Read"));
-    assert_eq!(with(None, None).as_deref(), Some("Fixing the webhook"));
+fn running_agents_stay_and_finished_ones_fade_after_a_while() {
+    let now = Utc::now();
+    let mut agents = vec![agent("run", false, 120, now)];
+    agents.extend((0..7).map(|i| agent(&format!("done{i}"), true, i, now)));
+    agents.push(agent("stale", true, 45, now));
+
+    let shown: Vec<String> = visible_agents(agents, now)
+        .into_iter()
+        .map(|agent| agent.id)
+        .collect();
+    assert_eq!(shown, ["run", "done0", "done1", "done2", "done3", "done4"]);
 }
 
 #[test]
-fn status_waits_for_the_first_turn_and_background_work_keeps_it_working() {
-    let fresh = session(
-        CLIAgentSessionStatus::Success,
-        CLIAgentSessionContext::default(),
+fn meta_line_names_type_model_shape_and_elapsed() {
+    let now = Utc::now();
+    assert_eq!(
+        agent_meta_line(&agent("a", true, 3, now), now),
+        "Explore · haiku · background · 1m 20s"
     );
-    assert!(row_status(&fresh).is_none());
-
-    let done_with_agents_running = session(
-        CLIAgentSessionStatus::Success,
-        CLIAgentSessionContext {
-            had_activity: true,
-            background_tasks: Some(BackgroundTasks {
-                count: 2,
-                only_subagents: true,
-                shells: 0,
-            }),
-            ..Default::default()
-        },
-    );
-    assert!(matches!(
-        row_status(&done_with_agents_running),
-        Some(ConversationStatus::InProgress)
-    ));
+    let mut running = agent("b", false, 0, now);
+    running.started_at = Some(now - Duration::seconds(42));
+    running.background = false;
+    running.model = None;
+    assert_eq!(agent_meta_line(&running, now), "Explore · 42s");
 }
