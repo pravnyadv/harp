@@ -1,6 +1,7 @@
 pub(crate) mod agent_cli_launch_modal;
 pub(crate) mod auto_handoff_sleep_modal;
 mod build_plan_migration_modal;
+mod claude_agents_panel;
 pub(crate) mod chatgpt_plan_modal;
 pub(crate) mod cloud_agent_capacity_modal;
 pub(crate) mod codex_modal;
@@ -1059,6 +1060,9 @@ enum TabBarSlot {
 pub struct Workspace {
     window_id: WindowId,
     pub(crate) tabs: Vec<TabData>,
+    /// Harp: the window's agent sessions panel, docked right of the panes.
+    claude_agents_panel_open: bool,
+    claude_agents_panel: claude_agents_panel::ClaudeAgentsPanelState,
     active_tab_index: usize,
     /// Tracks tab activation order (most-recently-used first).
     /// Each entry is the `pane_group.id()` of the corresponding tab.
@@ -3588,6 +3592,8 @@ impl Workspace {
 
         let mut ws = Self {
             tabs: Vec::new(),
+            claude_agents_panel_open: false,
+            claude_agents_panel: Default::default(),
             active_tab_index: 0,
             tab_mru_order: Vec::new(),
             hovered_tab_index: None,
@@ -23963,6 +23969,21 @@ impl Workspace {
             }
         }
 
+        if self.claude_agents_panel_open {
+            self.add_right_panel(
+                &mut panels_view,
+                &mut prev_panel_added,
+                Some(claude_agents_panel::render_claude_agents_panel(
+                    &self.claude_agents_panel,
+                    &self.tabs,
+                    self.active_tab_index,
+                    app,
+                )),
+                framed,
+                app,
+            );
+        }
+
         #[cfg(target_family = "wasm")]
         if !warpui::platform::wasm::is_mobile_device()
             && self
@@ -26000,6 +26021,10 @@ impl Workspace {
             ToggleRightPanel => {
                 let pane_group_handle = self.active_tab_pane_group().clone();
                 self.toggle_right_panel(&pane_group_handle, ctx);
+            }
+            ToggleClaudeAgentsPanel => {
+                self.claude_agents_panel_open = !self.claude_agents_panel_open;
+                ctx.notify();
             }
             #[cfg(feature = "local_fs")]
             OpenCodeReviewPanel(locator) => {

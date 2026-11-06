@@ -1272,7 +1272,7 @@ fn strip_group_prefix<'a>(title: &'a str, group_name: Option<&str>) -> &'a str {
 }
 
 /// The work that keeps the row working; background shells are the row's dot, not this count.
-fn background_tasks_label(tasks: BackgroundTasks) -> String {
+pub(super) fn background_tasks_label(tasks: BackgroundTasks) -> String {
     let count = tasks.count.saturating_sub(tasks.shells);
     let noun = match (tasks.only_subagents, count) {
         (true, 1) => "background agent",
@@ -4575,7 +4575,7 @@ fn render_row_status_placeholder(appearance: &Appearance) -> Box<dyn Element> {
         .finish()
 }
 
-fn render_row_status_icon(
+pub(super) fn render_row_status_icon(
     status: &ConversationStatus,
     appearance: &Appearance,
 ) -> Box<dyn Element> {

@@ -2417,7 +2417,7 @@ fn tab_label_user_var_emits_a_trimmed_label_and_empty_clears_it() {
         .with_terminal_events_tx(event_tx)
         .build();
     let mut terminal = TerminalModel::mock(None, Some(event_proxy));
-    let mut tab_labels = || {
+    let tab_labels = || {
         std::iter::from_fn(|| event_rx.try_recv().ok())
             .filter_map(|event| match event {
                 Event::TabLabel(label) => Some(label),
