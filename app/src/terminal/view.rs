@@ -17479,6 +17479,7 @@ impl TerminalView {
     }
 
     fn paste(&mut self, middle_click: bool, ctx: &mut ViewContext<Self>) {
+        self.end_live_selection(ctx);
         let (should_paste_in_input, needs_bracketed_paste) = {
             let mut model = self.model.lock();
             (
@@ -19087,6 +19088,9 @@ impl TerminalView {
         _delta: &Lines,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !self.is_selecting {
+            return;
+        }
         self.model
             .lock()
             .alt_screen_mut()
@@ -19105,6 +19109,19 @@ impl TerminalView {
         }
         self.is_selecting = false;
         true
+    }
+
+    /// Ends a selection the mouse is still dragging, as a mouse-up would, so copy on select fills
+    /// the clipboard before a paste reads it. The rest of the drag no longer extends it.
+    fn end_live_selection(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.is_selecting {
+            return;
+        }
+        if self.model.lock().is_alt_screen_active() {
+            self.end_alt_selection(ctx);
+        } else {
+            self.end_text_selection(ctx);
+        }
     }
 
     fn end_alt_selection(&mut self, ctx: &mut ViewContext<Self>) {
@@ -19904,6 +19921,9 @@ impl TerminalView {
         position: Vector2F,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !self.is_selecting {
+            return;
+        }
         // When selecting blocks, there is too much noise with the mouse_dragged event,
         // causing a block selection to be mis-interpreted as a text selection. Hence,
         // we check if the move is non-trivial before resetting the block selections.

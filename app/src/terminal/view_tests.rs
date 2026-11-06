@@ -4922,6 +4922,38 @@ fn test_alt_screen_copy_on_select() {
 }
 
 #[test]
+fn test_paste_during_drag_copies_the_live_selection_first() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.set_mode(ansi::Mode::SwapScreen {
+                    save_cursor_and_clear_screen: true,
+                });
+                model.alt_screen_mut().input('h');
+                model.alt_screen_mut().input('i');
+            }
+
+            view.begin_alt_selection(Point::new(0, 0), Side::Left, SelectionType::Simple, ctx);
+            view.update_alt_selection(Point::new(0, 0), Side::Right, &Lines::zero(), ctx);
+            assert_eq!("", &read_from_clipboard(ctx));
+
+            view.paste(false, ctx);
+            assert_eq!("h", &read_from_clipboard(ctx));
+            assert!(!view.is_selecting());
+
+            // The rest of the drag and its mouse-up leave the copied text alone.
+            view.update_alt_selection(Point::new(0, 1), Side::Right, &Lines::zero(), ctx);
+            view.end_alt_selection(ctx);
+            assert_eq!("h", &read_from_clipboard(ctx));
+        });
+    })
+}
+
+#[test]
 fn test_alt_screen_select_with_sgr_mouse() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
