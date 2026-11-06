@@ -14,6 +14,11 @@ const TAIL_BYTES: u64 = 64 * 1024;
 /// How much of a transcript's end the detail view reads for its steps.
 const STEPS_TAIL_BYTES: u64 = 512 * 1024;
 const DETAIL_CHARS: usize = 160;
+/// Without a registry entry to date the session's process, a subagent quiet this long is taken
+/// as ended.
+const QUIET_MEANS_ENDED: chrono::Duration = chrono::Duration::minutes(30);
+/// The tool a subagent ends on when it delivers its report.
+const HANDBACK_TOOL: &str = "SubagentHandback";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Subagent {
@@ -90,8 +95,35 @@ pub fn find_subagents_dir(projects_root: &Path, session_id: &str) -> Option<Path
         .find(|dir| dir.is_dir())
 }
 
-/// Every subagent in `dir`, running ones first, then the most recently active.
-pub fn read_subagents(dir: &Path) -> Vec<Subagent> {
+/// When the running Claude Code process of this session started, from Claude Code's registry
+/// (`<claude dir>/sessions/<pid>.json`). A resumed session reuses its id, so its folder also holds
+/// subagents of earlier runs, none of which can still be running.
+pub fn session_process_started_at(sessions_dir: &Path, session_id: &str) -> Option<DateTime<Utc>> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Entry {
+        session_id: String,
+        started_at: i64,
+    }
+    fs::read_dir(sessions_dir)
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .filter_map(|entry| serde_json::from_slice::<Entry>(&fs::read(entry.path()).ok()?).ok())
+        .filter(|entry| entry.session_id == session_id)
+        .filter_map(|entry| DateTime::from_timestamp_millis(entry.started_at))
+        .max()
+}
+
+/// Every subagent in `dir`, running ones first, then the most recently active. Older Claude Code
+/// versions never mark a subagent finished, so one also counts as finished when it handed its
+/// report back, started before the session's current process (`process_started_at`), or, with no
+/// process date known, has been quiet for a while.
+pub fn read_subagents(
+    dir: &Path,
+    process_started_at: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> Vec<Subagent> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -109,20 +141,33 @@ pub fn read_subagents(dir: &Path) -> Vec<Subagent> {
             let transcript = dir.join(format!("agent-{id}.jsonl"));
             let tail = read_tail(&transcript, TAIL_BYTES);
             let last_line = tail.iter().rev().find(|line| line.timestamp.is_some());
+            let last_active_at = last_line.and_then(|line| line.timestamp);
+            let started_at = read_first_timestamp(&transcript);
+            let last_tool =
+                tail.iter()
+                    .rev()
+                    .flat_map(line_steps)
+                    .find_map(|step| match step.kind {
+                        StepKind::Tool { name, detail } => Some((name, detail)),
+                        StepKind::Text(_) => None,
+                    });
+            let handed_back = last_tool
+                .as_ref()
+                .is_some_and(|(name, _)| name == HANDBACK_TOOL);
+            let outlived = match process_started_at {
+                Some(process_started_at) => started_at.is_some_and(|at| at < process_started_at),
+                None => last_active_at.is_none_or(|at| now - at > QUIET_MEANS_ENDED),
+            };
             Some(Subagent {
                 agent_type: meta.agent_type.unwrap_or_else(|| "agent".to_owned()),
                 description: meta.description.unwrap_or_default(),
                 model: meta.model,
                 background: meta.request_shape.as_deref() == Some("background"),
-                finished: meta.finished,
-                started_at: read_first_timestamp(&transcript),
-                last_active_at: last_line.and_then(|line| line.timestamp),
-                current_step: tail
-                    .iter()
-                    .rev()
-                    .flat_map(line_steps)
-                    .find(|step| matches!(step.kind, StepKind::Tool { .. }))
-                    .map(|step| step.kind.label()),
+                finished: meta.finished || handed_back || outlived,
+                started_at,
+                last_active_at,
+                current_step: last_tool
+                    .map(|(name, detail)| StepKind::Tool { name, detail }.label()),
                 id,
                 transcript,
             })

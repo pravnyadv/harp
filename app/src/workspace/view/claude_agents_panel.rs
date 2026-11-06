@@ -26,7 +26,7 @@ use crate::drive::panel::{MAX_SIDEBAR_WIDTH_RATIO, MIN_SIDEBAR_WIDTH};
 use crate::terminal::CLIAgent;
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
 use crate::terminal::cli_agent_sessions::subagents::{
-    Step, Subagent, find_subagents_dir, read_steps, read_subagents,
+    Step, Subagent, find_subagents_dir, read_steps, read_subagents, session_process_started_at,
 };
 use crate::workspace::Workspace;
 use crate::workspace::action::{AgentsPanelAction, WorkspaceAction};
@@ -103,11 +103,10 @@ impl ClaudeAgentsPanelState {
     }
 }
 
-fn claude_projects_dir() -> Option<PathBuf> {
+fn claude_dir() -> Option<PathBuf> {
     std::env::var_os("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
         .or_else(|| dirs::home_dir().map(|home| home.join(".claude")))
-        .map(|dir| dir.join("projects"))
 }
 
 /// Running subagents and the few that finished lately, so a quick one does not vanish unseen.
@@ -160,7 +159,9 @@ impl Workspace {
     fn agent_session_refs(&self, app: &AppContext) -> Vec<SessionRef> {
         let sessions = CLIAgentSessionsModel::as_ref(app);
         let mut refs = Vec::new();
-        for (tab_index, tab) in self.tabs.iter().enumerate() {
+        // Only the tab in view: the panel follows the session you are working in.
+        let tab_index = self.active_tab_index;
+        if let Some(tab) = self.tabs.get(tab_index) {
             for terminal_view in tab.pane_group.as_ref(app).terminal_views(app) {
                 let terminal_view = terminal_view.as_ref(app);
                 let Some(session) = sessions.session(terminal_view.id()) else {
@@ -193,7 +194,9 @@ impl Workspace {
         let selected = self.claude_agents_panel.selected.clone();
         ctx.spawn(
             async move {
-                let projects = claude_projects_dir();
+                let claude_dir = claude_dir();
+                let projects = claude_dir.as_ref().map(|dir| dir.join("projects"));
+                let registry = claude_dir.as_ref().map(|dir| dir.join("sessions"));
                 let now = Utc::now();
                 let mut sessions = Vec::new();
                 for session in refs {
@@ -205,7 +208,10 @@ impl Workspace {
                     };
                     let Some(dir) = dir else { continue };
                     dirs.insert(session.session_id.clone(), dir.clone());
-                    let agents = visible_agents(read_subagents(&dir), now);
+                    let process_started_at = registry.as_deref().and_then(|registry| {
+                        session_process_started_at(registry, &session.session_id)
+                    });
+                    let agents = visible_agents(read_subagents(&dir, process_started_at, now), now);
                     if !agents.is_empty() {
                         sessions.push(SessionAgents {
                             tab_index: session.tab_index,
