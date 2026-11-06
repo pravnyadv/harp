@@ -92,6 +92,9 @@ use crate::terminal::{
 /// Max size of the window title stack.
 const TITLE_STACK_MAX_DEPTH: usize = 4096;
 
+/// `SetUserVar` name a program sets to label its pane in the vertical tabs sidebar.
+const TAB_LABEL_USER_VAR: &str = "harp_tab_label";
+
 /// The status of a conversation transcript viewer.
 /// This tracks both the loading state and the type of conversation being viewed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2670,6 +2673,17 @@ impl ansi::Handler for TerminalModel {
 
     fn should_validate_dcs_hook_session_id(&self) -> bool {
         !self.shared_session_status().is_viewer()
+    }
+
+    fn set_user_var(&mut self, name: &str, value: String) {
+        if name != TAB_LABEL_USER_VAR {
+            return;
+        }
+        let label = value.replace('\0', "");
+        let label = label.trim();
+        self.event_proxy.send_app_event(Event::TabLabel(
+            (!label.is_empty()).then(|| label.to_owned()),
+        ));
     }
 
     fn set_title(&mut self, title: Option<String>) {

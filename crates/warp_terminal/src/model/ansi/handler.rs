@@ -376,6 +376,9 @@ pub trait Handler {
     /// Returns whether or not the image was saved to memory.
     fn handle_completed_iterm_image(&mut self, _image: ITermImage) {}
 
+    /// Callback for iTerm's `SetUserVar` OSC, with the value already base64-decoded.
+    fn set_user_var(&mut self, _name: &str, _value: String) {}
+
     /// Callback that tells the terminal to prepare for receiving the a shell hook via
     /// key-value pairs.
     fn start_receiving_hook(&mut self, _hook_name: String) {}

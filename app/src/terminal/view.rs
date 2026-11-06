@@ -12575,6 +12575,11 @@ impl TerminalView {
                 self.update_scroll_position_locking(ScrollPositionUpdate::AfterClear, ctx);
                 ctx.notify();
             }
+            ModelEvent::TabLabel(label) => {
+                self.pane_configuration.update(ctx, |config, ctx| {
+                    config.set_reported_tab_label(label.clone(), ctx);
+                });
+            }
             ModelEvent::Title(title) => {
                 self.terminal_title = title.to_owned();
                 self.update_cli_agent_status_from_title(ctx);

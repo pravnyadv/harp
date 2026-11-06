@@ -2409,3 +2409,32 @@ fn cloud_mode_setup_phase_ended_does_not_emit_when_not_sharing() {
     let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
     assert!(events.is_empty());
 }
+
+#[test]
+fn tab_label_user_var_emits_a_trimmed_label_and_empty_clears_it() {
+    let (event_tx, event_rx) = async_channel::unbounded();
+    let event_proxy = ChannelEventListener::builder_for_test()
+        .with_terminal_events_tx(event_tx)
+        .build();
+    let mut terminal = TerminalModel::mock(None, Some(event_proxy));
+    let mut tab_labels = || {
+        std::iter::from_fn(|| event_rx.try_recv().ok())
+            .filter_map(|event| match event {
+                Event::TabLabel(label) => Some(label),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    terminal.set_user_var(
+        "harp_tab_label",
+        "  Template Deletion on Meta \n".to_owned(),
+    );
+    terminal.set_user_var("harp_tab_label", " ".to_owned());
+    terminal.set_user_var("some_other_var", "ignored".to_owned());
+
+    assert_eq!(
+        tab_labels(),
+        vec![Some("Template Deletion on Meta".to_owned()), None]
+    );
+}
