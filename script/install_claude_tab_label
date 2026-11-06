@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Installs the Claude Code hook that labels Harp's sidebar rows (script/claude-tab-label) and
+# registers it for SessionStart, UserPromptSubmit and SessionEnd. Safe to run again: it refreshes
+# the hook and never registers it twice.
+#
+#   curl -fsSL https://raw.githubusercontent.com/pravnyadv/harp/main/script/install_claude_tab_label | bash
+#
+# Environment:
+#   HARP_REPO    GitHub repo to fetch the hook from (default pravnyadv/harp).
+#   CLAUDE_HOME  Claude Code config dir (default ~/.claude).
+set -euo pipefail
+
+REPO="${HARP_REPO:-pravnyadv/harp}"
+CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
+HOOK="$CLAUDE_HOME/hooks/harp-tab-label"
+SETTINGS="$CLAUDE_HOME/settings.json"
+
+mkdir -p "$CLAUDE_HOME/hooks"
+local_hook="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd)/claude-tab-label"
+if [[ -f "$local_hook" ]]; then
+  cp "$local_hook" "$HOOK"
+else
+  curl -fsSL "https://raw.githubusercontent.com/$REPO/main/script/claude-tab-label" -o "$HOOK"
+fi
+chmod +x "$HOOK"
+
+python3 -I - "$SETTINGS" "$HOOK" <<'EOF'
+import json, os, shutil, sys
+
+settings_path, hook = sys.argv[1], sys.argv[2]
+command = hook.replace(os.path.expanduser("~"), "~", 1)
+settings = {}
+if os.path.exists(settings_path):
+    with open(settings_path) as f:
+        settings = json.load(f)
+
+hooks = settings.setdefault("hooks", {})
+added = []
+for event in ("SessionStart", "UserPromptSubmit", "SessionEnd"):
+    groups = hooks.setdefault(event, [])
+    registered = any(
+        h.get("command") in (command, hook) for g in groups for h in g.get("hooks", [])
+    )
+    if not registered:
+        groups.append({"hooks": [{"type": "command", "command": command}]})
+        added.append(event)
+
+if added:
+    if os.path.exists(settings_path):
+        shutil.copy(settings_path, settings_path + ".bak")
+    tmp = settings_path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(settings, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, settings_path)
+    print(f"Registered {command} for {', '.join(added)} in {settings_path}")
+else:
+    print(f"{command} was already registered in {settings_path}")
+EOF
+echo "Installed $HOOK. New Claude sessions label their Harp sidebar row."

@@ -6,7 +6,8 @@
 #
 # The DMG is fetched with curl, which (unlike a browser) does not mark it quarantined, so
 # Gatekeeper does not block the first launch of an ad hoc signed build. The installed copy being
-# replaced goes to the Trash.
+# replaced goes to the Trash. When Claude Code is set up, this also installs the hook that labels
+# Harp's sidebar rows (script/install_claude_tab_label).
 #
 # Environment:
 #   HARP_REPO  GitHub repo to install from (default pravnyadv/harp).
@@ -51,4 +52,8 @@ ditto "$mountpoint/Harp.app" "$APP"
 codesign --verify --deep --strict "$APP"
 
 echo "Installed $(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Contents/Info.plist") from $url"
+
+if [[ -d "${CLAUDE_HOME:-$HOME/.claude}" ]]; then
+  curl -fsSL "https://raw.githubusercontent.com/$REPO/main/script/install_claude_tab_label" | bash
+fi
 echo "Open Harp from the Dock or Launchpad."
