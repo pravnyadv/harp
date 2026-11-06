@@ -1526,7 +1526,7 @@ pub(crate) fn initialize_app(
                 warpui_extras::secure_storage::register_noop(&secure_storage_service_name, ctx);
             } else if #[cfg(any(target_os = "linux", target_os = "freebsd"))] {
                 warpui_extras::secure_storage::register_with_fallback(&secure_storage_service_name, warp_core::paths::state_dir(), ctx)
-            } else if #[cfg(target_os = "windows")] {
+            } else if #[cfg(any(target_os = "windows", target_os = "macos"))] {
                 warpui_extras::secure_storage::register_with_dir(&secure_storage_service_name, warp_core::paths::state_dir(), ctx)
             } else {
                 warpui_extras::secure_storage::register(&secure_storage_service_name, ctx);

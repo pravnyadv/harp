@@ -82,9 +82,9 @@ pub fn register_with_fallback(
     });
 }
 
-/// Registers a Windows-native Secure Storage provider
-/// that uses the provided directory to store data in encrypted files.
-#[cfg(target_os = "windows")]
+/// Registers a Secure Storage provider that keeps data in files in the provided directory:
+/// encrypted on Windows, owner-only on macOS.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 pub fn register_with_dir(
     service_name: &str,
     storage_dir: std::path::PathBuf,
