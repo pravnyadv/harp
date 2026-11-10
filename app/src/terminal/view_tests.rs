@@ -7417,6 +7417,64 @@ fn hovered_link_is_dropped_when_output_redraws_over_it() {
 }
 
 #[test]
+fn link_pointer_survives_redraws_under_a_still_mouse() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            let highlight_url = |view: &mut TerminalView| {
+                let mut model = view.model.lock();
+                let point = WithinModel::BlockList(WithinBlock::new(
+                    Point::new(0, 6),
+                    model.block_list().active_block_index(),
+                    crate::terminal::GridType::Output,
+                ));
+                let url = model
+                    .url_at_point(&point)
+                    .expect("the url should be detected");
+                view.highlighted_link
+                    .set(GridHighlightedLink::Url(url), &mut model);
+            };
+            view.model
+                .lock()
+                .simulate_long_running_block("claude", "see https://warp.dev");
+            highlight_url(view);
+            ctx.set_cursor_shape(Cursor::PointingHand);
+
+            // Claude Code clears and rewrites its lines on every keystroke.
+            view.model.lock().process_bytes("\r\x1b[2K");
+            view.handle_terminal_wakeup((), ctx);
+            assert!(view.highlighted_link.is_none());
+            assert_eq!(
+                ctx.get_cursor_shape(),
+                Cursor::PointingHand,
+                "a redraw alone does not flash the arrow"
+            );
+
+            #[cfg(feature = "local_fs")]
+            {
+                view.handle_file_link_completed(None, ctx);
+                assert_eq!(
+                    ctx.get_cursor_shape(),
+                    Cursor::Arrow,
+                    "no link after the rescan resets the cursor"
+                );
+
+                view.handle_file_link_completed(None, ctx);
+                ctx.set_cursor_shape(Cursor::IBeam);
+                view.handle_file_link_completed(None, ctx);
+                assert_eq!(
+                    ctx.get_cursor_shape(),
+                    Cursor::IBeam,
+                    "a scan with no link pending leaves other cursors alone"
+                );
+            }
+        });
+    })
+}
+
+#[test]
 fn test_scroll_position_doesnt_change_when_block_finished() {
     use futures_lite::StreamExt;
 
