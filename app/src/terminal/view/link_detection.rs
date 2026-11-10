@@ -265,6 +265,10 @@ pub struct HighlightedLinkOption {
     text: Option<String>,
     /// True if the underlying content has changed such that the link may no longer be valid.
     invalidated: bool,
+    /// The highlight was dropped because the content under a still mouse changed, so the pointer
+    /// cursor stays until a rescan of that spot decides; resetting first flashes the arrow on
+    /// every redraw.
+    pending_rescan: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -359,6 +363,7 @@ impl HighlightedLinkOption {
         }
         self.text = link.text(model);
         self.inner = Some(link);
+        self.pending_rescan = false;
     }
 
     /// Wrapper method for Option::take that also keeps the derived state in the BlockList and
@@ -367,19 +372,38 @@ impl HighlightedLinkOption {
         model.block_list_mut().clear_smart_select_override();
         model.alt_screen_mut().clear_smart_select_override();
         self.invalidated = false;
+        self.pending_rescan = false;
         self.text = None;
         self.inner.take()
     }
 
-    /// Removes the highlight if the text under it is no longer the link that was highlighted,
-    /// returning whether it did.
+    /// Removes the highlight but keeps its pointer cursor until the next scan decides.
+    fn take_for_rescan(&mut self, model: &mut TerminalModel) {
+        self.take(model);
+        self.pending_rescan = true;
+    }
+
+    /// Removes the highlight and any pending rescan, returning whether the pointer cursor was
+    /// showing for it.
+    pub fn release(&mut self, model: &mut TerminalModel) -> bool {
+        let pending_rescan = self.pending_rescan;
+        self.take(model).is_some() || pending_rescan
+    }
+
+    /// Ends a pending rescan, returning whether one was pending.
+    pub fn end_pending_rescan(&mut self) -> bool {
+        std::mem::take(&mut self.pending_rescan)
+    }
+
+    /// Removes the highlight, pending a rescan, if the text under it is no longer the link that
+    /// was highlighted, returning whether it did.
     pub fn take_if_text_changed(&mut self, model: &mut TerminalModel) -> bool {
         let changed = self
             .inner
             .as_ref()
             .is_some_and(|link| link.text(model) != self.text);
         if changed {
-            self.take(model);
+            self.take_for_rescan(model);
         }
         changed
     }
@@ -416,7 +440,7 @@ impl super::TerminalView {
         if self.terminal_is_selecting(&self.model.lock(), ctx)
             || self.is_navigated_away_from_window(ctx)
         {
-            if self.highlighted_link.take(&mut self.model.lock()).is_some() {
+            if self.highlighted_link.release(&mut self.model.lock()) {
                 ctx.reset_cursor();
                 ctx.notify();
             }
@@ -425,7 +449,7 @@ impl super::TerminalView {
 
         // If the mouse isn't in the terminal view, we're not hovering any link.
         let Some(position) = position else {
-            if self.highlighted_link.take(&mut self.model.lock()).is_some() {
+            if self.highlighted_link.release(&mut self.model.lock()) {
                 ctx.reset_cursor();
                 // Clear last_hover_fragment_boundary when mouse is out of block bounds.
                 self.last_hover_fragment_boundary = None;
@@ -450,11 +474,15 @@ impl super::TerminalView {
 
         // If a link is highlighted and it's invalidated or we're not hovering it, remove that
         // hover and look for a new one.
-        if self.highlighted_link.is_some() {
-            // Remove the current highlighted link because we are no longer
-            // hovering over it.
-            self.highlighted_link.take(&mut self.model.lock());
-            new_cursor_shape = Some(Cursor::Arrow);
+        if let Some(link) = self.highlighted_link.as_ref() {
+            if link.contains(position) {
+                self.highlighted_link
+                    .take_for_rescan(&mut self.model.lock());
+                self.last_hover_fragment_boundary = None;
+            } else {
+                self.highlighted_link.take(&mut self.model.lock());
+                new_cursor_shape = Some(Cursor::Arrow);
+            }
         }
 
         let (hyperlink_at_point, url_at_point, new_fragment_boundary) = {
@@ -475,7 +503,7 @@ impl super::TerminalView {
             )
         };
 
-        match (
+        let scan_sent = match (
             hyperlink_at_point,
             url_at_point,
             &self.last_hover_fragment_boundary,
@@ -486,32 +514,36 @@ impl super::TerminalView {
                     &mut self.model.lock(),
                 );
                 new_cursor_shape = Some(Cursor::PointingHand);
+                false
             }
             (None, Some(url), _) => {
                 self.highlighted_link
                     .set(GridHighlightedLink::Url(url), &mut self.model.lock());
                 new_cursor_shape = Some(Cursor::PointingHand);
+                false
             }
-            // Only scan for links if the mouse hovered on a new word.
+            // Only scan for links if the mouse hovered on a new word, or if there's no last hover
+            // fragment boundary.
             (_, _, Some(last_hover_fragment_boundary))
-                if !last_hover_fragment_boundary.contains(position) =>
+                if last_hover_fragment_boundary.contains(position) =>
             {
-                // Use try_send to return an error directly when the channel is full
-                // instead of blocking main thread.
-                let _ = self.find_link_tx.try_send(FindLinkArg {
+                false
+            }
+            // Use try_send to return an error directly when the channel is full
+            // instead of blocking main thread.
+            (_, _, _) => self
+                .find_link_tx
+                .try_send(FindLinkArg {
                     position: *position,
                     from_editor,
-                });
-            }
-            // If there's no last hover fragment boundary, we scan for links.
-            (_, _, None) => {
-                let _ = self.find_link_tx.try_send(FindLinkArg {
-                    position: *position,
-                    from_editor,
-                });
-            }
-            _ => (),
+                })
+                .is_ok(),
         };
+
+        // Nothing will rescan the spot, so a pointer kept for the rescan goes now.
+        if !scan_sent && self.highlighted_link.end_pending_rescan() {
+            new_cursor_shape.get_or_insert(Cursor::Arrow);
+        }
 
         if let Some(new_cursor_shape) = new_cursor_shape {
             ctx.set_cursor_shape(new_cursor_shape);
@@ -544,6 +576,10 @@ impl super::TerminalView {
 
         #[cfg(feature = "local_fs")]
         self.scan_for_file_path(position, from_editor, ctx);
+        #[cfg(not(feature = "local_fs"))]
+        if self.highlighted_link.end_pending_rescan() {
+            ctx.reset_cursor();
+        }
     }
 
     pub(super) fn open_highlighted_link(
@@ -670,7 +706,7 @@ impl super::TerminalView {
                     Self::handle_file_link_completed,
                 );
             }
-            _ if self.highlighted_link.take(&mut self.model.lock()).is_some() => {
+            _ if self.highlighted_link.release(&mut self.model.lock()) => {
                 ctx.reset_cursor();
                 ctx.notify();
             }
@@ -830,21 +866,24 @@ impl super::TerminalView {
         }
     }
 
-    fn handle_file_link_completed(
+    pub(super) fn handle_file_link_completed(
         &mut self,
         link_result: Option<GridHighlightedLink>,
         ctx: &mut ViewContext<Self>,
     ) {
         let mut model = self.model.lock();
-        if self.highlighted_link.take(&mut model).is_some() {
-            ctx.reset_cursor();
-            ctx.notify();
-        }
-
-        if let Some(new_link) = link_result {
-            self.highlighted_link.set(new_link, &mut model);
-            ctx.set_cursor_shape(Cursor::PointingHand);
-            ctx.notify();
+        let showed_link = self.highlighted_link.release(&mut model);
+        match link_result {
+            Some(new_link) => {
+                self.highlighted_link.set(new_link, &mut model);
+                ctx.set_cursor_shape(Cursor::PointingHand);
+                ctx.notify();
+            }
+            None if showed_link => {
+                ctx.reset_cursor();
+                ctx.notify();
+            }
+            None => {}
         }
     }
 }

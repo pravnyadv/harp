@@ -10243,7 +10243,8 @@ impl TerminalView {
             .highlighted_link
             .take_if_text_changed(&mut self.model.lock())
         {
-            ctx.reset_cursor();
+            // The redraw may have put the same link back, so the next hover rescans the spot.
+            self.last_hover_fragment_boundary = None;
         }
 
         // If find bar is active, we update the matches for the last/active block or the alt screen.
